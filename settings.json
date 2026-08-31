@@ -1,0 +1,31 @@
+{
+  "subagents": {
+    "agentOverrides": {
+      "pentest-coord": {
+        "model": "ica-se-claude/claude-opus-4-8",
+        "thinking": "high",
+        "fallbackModels": ["ica-se-claude/claude-opus-4-6"]
+      },
+      "pentest-recon": {
+        "model": "ica-se-claude/claude-opus-4-8",
+        "thinking": "high",
+        "fallbackModels": ["ica-se-claude/claude-sonnet-5"]
+      },
+      "pentest-worker": {
+        "model": "ica-se-claude/claude-opus-4-8",
+        "thinking": "high",
+        "fallbackModels": ["ica-se-claude/claude-sonnet-5"]
+      },
+      "pentest-validator": {
+        "model": "ica-se-claude/claude-opus-4-8",
+        "thinking": "high",
+        "fallbackModels": ["ica-se-claude/claude-opus-4-6"]
+      },
+      "pentest-analyst": {
+        "model": "ica-se-claude/claude-opus-5",
+        "thinking": "high",
+        "fallbackModels": ["ica-se-claude/claude-opus-4-8"]
+      }
+    }
+  }
+}

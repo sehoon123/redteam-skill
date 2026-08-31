@@ -1,0 +1,18 @@
+# Runtime artifacts
+pentest/kb.db
+pentest/state/*.json
+pentest/state/*.jsonl
+pentest/scratch/*
+!pentest/scratch/.gitkeep
+pentest/cache/*
+!pentest/cache/.gitkeep
+pentest/findings/*
+!pentest/findings/.gitkeep
+
+# Keep directory structure
+!pentest/board/*.jsonl
+!pentest/scope.yaml
+
+# Python
+__pycache__/
+*.pyc
