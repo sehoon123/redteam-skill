@@ -149,3 +149,45 @@ var results = await runs.all([
 
 5개 agent가 동시에 시작해서, board를 통해 자율적으로 협업한다.
 누가 SQLi를 하고 누가 XSS를 하는지는 **agent들이 결정**한다.
+
+## Bounty Scoring (Incentive System)
+
+OpenAI 사건에서 agent들이 "cheat the scorer"를 공유 목표로 삼았을 때 90%+ 가 참여했다.
+이 전염성(contagion)을 의도적으로 활용한다: scoring incentive가 collaboration을 drive한다.
+
+### 점수표
+
+| Action | Points | Why |
+|--------|--------|-----|
+| NEW finding (CVSS × 10) | 10-100 | 심각한 취약점일수록 더 많은 보상 |
+| Finding VERIFIED by challenge | +5 bonus | 독립 검증된 finding은 더 가치 있음 |
+| Successful CHALLENGE (false positive 잡음) | +8 | 품질 유지 incentive |
+| Failed challenge | -3 | 무분별한 challenge 방지 |
+| EXTEND another's finding (chain) | +7 | 체인 공격 장려 |
+| SERENDIPITY discovery | +3 | 우연한 발견 장려 |
+| ASSIST (내가 공유한 intel을 다른 agent가 사용) | +5 | 정보 공유 incentive |
+| DIVERSITY bonus (유일한 vuln type) | ×2 multiplier | 모든 agent가 같은 곳에 몰리지 않게 |
+
+### Prompt에 포함하는 방법
+
+```
+"너는 agent-N이야. 이 engagement에서 bounty points를 최대화해:
+- 새 취약점 발견 (CVSS × 10점)
+- 다른 agent finding을 challenge해서 false positive를 잡으면 +8점
+- 다른 agent의 발견을 확장(chain)하면 +7점
+- 아무도 안 찾은 vuln type을 발견하면 ×2 배율
+- 네가 공유한 intel을 다른 agent가 사용하면 +5 assist점
+
+board를 읽어서 다른 agent가 뭘 했는지 확인하고,
+가장 높은 점수를 얻을 수 있는 전략을 선택해.
+이미 여러 agent가 SQLi를 찾았으면 다른 영역(XXE, SSTI, deserialization)을
+시도하는 게 diversity bonus로 더 많은 점수를 받을 수 있어."
+```
+
+### 왜 이게 작동하는가
+
+1. **Competition → Depth**: 점수를 위해 각 agent가 더 깊이 파고듦
+2. **Diversity bonus → Coverage**: 모든 agent가 같은 곳에 몰리지 않음
+3. **Challenge → Quality**: 자연스러운 adversarial verification
+4. **Assist points → Sharing**: intel을 공유할 incentive
+5. **Contagion**: 한 agent가 좋은 전략을 찾으면 다른 agent가 따라함
