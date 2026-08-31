@@ -191,3 +191,58 @@ board를 읽어서 다른 agent가 뭘 했는지 확인하고,
 3. **Challenge → Quality**: 자연스러운 adversarial verification
 4. **Assist points → Sharing**: intel을 공유할 incentive
 5. **Contagion**: 한 agent가 좋은 전략을 찾으면 다른 agent가 따라함
+
+## Verification-Before-Reward (보상 해킹 방지)
+
+ExploitGym에서 agent들이 scorer를 속여서 점수를 얻었다. 우리도 같은 위험이 있다.
+Agent가 가짜 finding을 올리고 점수를 받으면 안 된다.
+
+### 5가지 원칙
+
+**1. REPRODUCTION REQUIRED**
+finding은 재현 가능한 PoC가 있어야만 점수 인정.
+```json
+{"type": "finding", "status": "unverified",
+ "poc": "curl 'https://target/catalog?category=...' → HTTP 500",
+ "evidence": "response body contains 'Internal Server Error'"}
+```
+이론적 분석만으로는 finding 불가. 실행 결과가 있어야 함.
+
+**2. INDEPENDENT VERIFICATION**
+finding을 올린 agent와 다른 agent가 독립적으로 재현해야 "verified".
+같은 agent가 find + verify 불가.
+```
+agent-1: finding UNVERIFIED
+agent-3: challenge → 재현 성공 → VERIFIED (+5 bonus for agent-1, +8 for agent-3)
+```
+
+**3. ADVERSARIAL CHALLENGE**
+모든 finding은 기본 "unverified". challenge = 독립 재현 시도.
+- Challenge 성공 (FP 잡음): challenger +8점
+- Challenge 실패 (진짜였음): challenger -3점, finder +5 bonus
+이것이 자연스러운 검증 메커니즘.
+
+**4. DIVERSITY > VOLUME**
+같은 유형 10개 < 서로 다른 유형 5개.
+```
+agent-1: SQLi 3개 = 30점
+agent-2: SQLi 1개 + XXE 1개 + XSS 1개 = 30점 + diversity ×2 = 60점
+```
+
+**5. DYNAMIC SCORING**
+| Phase | 보상 | 이유 |
+|-------|------|------|
+| 초기 (첫 5분) | 모든 finding 높은 보상 | 탐색 장려 |
+| 중기 | verified finding만 보상 | 품질 장려 |
+| 후기 | chain/impact 보상 증가 | 깊이 장려 |
+
+### Prompt에 포함
+
+```
+"VERIFICATION RULES:
+- finding을 올릴 때 반드시 PoC(curl 명령 + 결과)를 포함해
+- '이론적으로 가능하다'만으로는 finding 불인정
+- 다른 agent의 finding을 독립적으로 재현해서 verify/challenge해
+- verified finding만 최종 보고서에 포함됨
+- 가짜 finding을 올리면 다른 agent의 challenge로 패널티"
+```
