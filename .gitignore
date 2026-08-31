@@ -1,7 +1,8 @@
 # Runtime artifacts
-pentest/kb.db
-pentest/state/*.json
-pentest/state/*.jsonl
+pentest/state/*
+!pentest/state/.gitkeep
+pentest/board/*
+!pentest/board/.gitkeep
 pentest/scratch/*
 !pentest/scratch/.gitkeep
 pentest/cache/*
@@ -9,8 +10,7 @@ pentest/cache/*
 pentest/findings/*
 !pentest/findings/.gitkeep
 
-# Keep directory structure
-!pentest/board/*.jsonl
+# Operator scope template stays tracked
 !pentest/scope.yaml
 
 # Python

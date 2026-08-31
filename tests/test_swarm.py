@@ -1,0 +1,247 @@
+import concurrent.futures
+import json
+import os
+import sqlite3
+import subprocess
+import tempfile
+import time
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SWARM = ROOT / "pentest" / "swarm.py"
+KB = ROOT / "pentest" / "kb.py"
+
+
+class CliTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name)
+        for name in ("state", "scratch", "findings", "board", "memory", "research/board"):
+            (self.home / name).mkdir(parents=True, exist_ok=True)
+        (self.home / "scope.yaml").write_text(
+            'engagement_id: TEST-001\nauthorization: "unit test"\ntargets:\n  - host: example.test\n'
+        )
+        self.env = {**os.environ, "PENTEST_HOME": str(self.home)}
+        self.run_swarm("init")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_cli(self, script, *args, check=True):
+        proc = subprocess.run(
+            ["python3", str(script), *map(str, args)], env=self.env,
+            text=True, capture_output=True,
+        )
+        if check and proc.returncode:
+            self.fail(f"command failed: {proc.args}\nstdout={proc.stdout}\nstderr={proc.stderr}")
+        if not check:
+            return proc
+        return json.loads(proc.stdout)
+
+    def run_swarm(self, *args, check=True):
+        return self.run_cli(SWARM, *args, check=check)
+
+    def join(self, label):
+        return self.run_swarm("join", "--label", label)["agent"]
+
+    def db(self):
+        return self.home / "state" / "TEST-001.sqlite3"
+
+    def test_concurrent_event_writers(self):
+        agents = [self.join(f"peer-{i}") for i in range(8)]
+
+        def send(i):
+            return self.run_swarm(
+                "emit", "--agent", agents[i % len(agents)], "--kind", "intel",
+                "--json", json.dumps({"n": i}),
+            )["seq"]
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+            seqs = list(pool.map(send, range(120)))
+        self.assertEqual(120, len(set(seqs)))
+        conn = sqlite3.connect(self.db())
+        self.assertEqual(120, conn.execute("SELECT COUNT(*) FROM events WHERE kind='intel'").fetchone()[0])
+
+    def test_empty_engagement_is_not_quiescent(self):
+        agent = self.join("peer")
+        result = self.run_swarm(
+            "next", "--agent", agent, "--wait", 0, "--quiet", 0,
+        )
+        self.assertEqual("wait", result["status"])
+
+    def test_atomic_claim_and_expired_lease_recovery(self):
+        owner = self.join("owner")
+        agents = [self.join(f"peer-{i}") for i in range(12)]
+        self.run_swarm(
+            "task-add", "--agent", owner, "--key", "GET:/x:server-input",
+            "--kind", "hypothesis", "--title", "test x",
+        )
+
+        def claim(agent):
+            return self.run_swarm("next", "--agent", agent, "--wait", 0, "--lease", 1, "--quiet", 999)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+            first = list(pool.map(claim, agents))
+        winner_indexes = [i for i, r in enumerate(first) if r["status"] == "claimed"]
+        self.assertEqual(1, len(winner_indexes))
+        survivors = [a for i, a in enumerate(agents) if i != winner_indexes[0]]
+        time.sleep(1.1)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=11) as pool:
+            second = list(pool.map(claim, survivors))
+        self.assertEqual(1, len([r for r in second if r["status"] == "claimed"]))
+
+    def test_ledger_activity_renews_lease(self):
+        creator = self.join("creator")
+        owner = self.join("owner")
+        other = self.join("other")
+        self.run_swarm(
+            "task-add", "--agent", creator, "--key", "renew-me",
+            "--kind", "hypothesis", "--title", "lease renewal",
+        )
+        claimed = self.run_swarm(
+            "next", "--agent", owner, "--wait", 0, "--lease", 1, "--quiet", 999,
+        )
+        self.assertEqual("claimed", claimed["status"])
+        time.sleep(0.6)
+        self.run_swarm("inbox", "--agent", owner, "--after", 0)
+        time.sleep(0.6)
+        result = self.run_swarm(
+            "next", "--agent", other, "--wait", 0, "--quiet", 999,
+        )
+        self.assertNotEqual("claimed", result["status"])
+
+    def test_independent_finding_attestation(self):
+        finder = self.join("finder")
+        verifier = self.join("verifier")
+        second = self.join("second-verifier")
+        evidence = self.home / "scratch" / "finding.txt"
+        evidence.write_text("response marker")
+        finding = self.run_swarm(
+            "finding-add", "--agent", finder, "--title", "Boundary issue",
+            "--severity", "High", "--type", "access-control",
+            "--endpoint", "GET /orders/1", "--evidence", evidence,
+        )
+        self.assertEqual("FIND-0001", finding["id"])
+        self.assertNotEqual("claimed", self.run_swarm(
+            "next", "--agent", finder, "--wait", 0, "--quiet", 999,
+        )["status"])
+        verify_work = self.run_swarm(
+            "next", "--agent", verifier, "--wait", 0, "--quiet", 999,
+        )
+        self.assertEqual("verify", verify_work["kind"])
+        self.assertNotEqual(0, self.run_swarm(
+            "finding-attest", "--agent", finder, "--work", verify_work["id"],
+            "--finding", finding["id"], "--verdict", "reproduced",
+            "--evidence", evidence, check=False,
+        ).returncode)
+        replay = self.home / "scratch" / "replay.txt"
+        replay.write_text("inconclusive replay")
+        inconclusive = self.run_swarm(
+            "finding-attest", "--agent", verifier, "--work", verify_work["id"],
+            "--finding", finding["id"], "--verdict", "inconclusive",
+            "--evidence", replay,
+        )
+        self.assertEqual("proposed", inconclusive["status"])
+        self.assertNotEqual("claimed", self.run_swarm(
+            "next", "--agent", verifier, "--wait", 0, "--quiet", 999,
+        )["status"])
+        retry = self.run_swarm(
+            "next", "--agent", second, "--wait", 0, "--quiet", 999,
+        )
+        fresh = self.home / "scratch" / "fresh-replay.txt"
+        fresh.write_text("independent response marker")
+        attested = self.run_swarm(
+            "finding-attest", "--agent", second, "--work", retry["id"],
+            "--finding", finding["id"], "--verdict", "reproduced",
+            "--evidence", fresh,
+        )
+        self.assertEqual("reproduced", attested["status"])
+        metrics = self.run_swarm("metrics")
+        self.assertEqual(1, metrics["findings"]["reproduced"])
+        report = self.run_swarm("report")
+        self.assertIn("FIND-0001", Path(report["report"]).read_text())
+        export = self.run_swarm("export")
+        self.assertTrue(Path(export["export"]).is_file())
+
+    def test_solo_finder_reports_verification_blocked(self):
+        finder = self.join("solo")
+        evidence = self.home / "scratch" / "solo.txt"
+        evidence.write_text("candidate")
+        self.run_swarm(
+            "finding-add", "--agent", finder, "--title", "Solo candidate",
+            "--severity", "Medium", "--type", "access-control",
+            "--endpoint", "GET /solo", "--evidence", evidence,
+        )
+        result = self.run_swarm(
+            "next", "--agent", finder, "--wait", 0, "--quiet", 0,
+        )
+        self.assertEqual("verification-blocked", result["status"])
+
+    def test_unknown_finding_references_fail_cleanly(self):
+        agent = self.join("peer")
+        self.run_swarm("surface-add", "--agent", agent, "--path", "/x")
+        attempt = self.run_swarm(
+            "attempt-add", "--agent", agent, "--surface", "GET /x",
+            "--check", "access-control", "--result", "partial",
+            "--finding", "FIND-9999", check=False,
+        )
+        credential = self.run_swarm(
+            "credential-add", "--agent", agent, "--type", "web",
+            "--username", "u", "--value", "v", "--finding", "FIND-9999",
+            check=False,
+        )
+        for proc in (attempt, credential):
+            self.assertNotEqual(0, proc.returncode)
+            self.assertIn("unknown finding", proc.stderr)
+            self.assertNotIn("Traceback", proc.stderr)
+
+    def test_coverage_preserves_attempt_history_and_unknowns(self):
+        agent = self.join("peer")
+        self.run_swarm("surface-add", "--agent", agent, "--method", "GET", "--path", "/catalog")
+        duplicate = self.run_swarm(
+            "surface-add", "--agent", agent, "--method", "GET", "--path", "catalog",
+        )
+        self.assertFalse(duplicate["created"])
+        self.assertEqual("GET /catalog", duplicate["key"])
+        self.run_swarm(
+            "attempt-add", "--agent", agent, "--surface", "GET /catalog",
+            "--check", "server-input", "--result", "safe",
+        )
+        self.run_swarm(
+            "attempt-add", "--agent", agent, "--surface", "GET /catalog",
+            "--check", "server-input", "--result", "vulnerable",
+        )
+        self.run_swarm("check-add", "--agent", agent, "--name", "custom-parser")
+        coverage = self.run_swarm("coverage", "--gaps-only")
+        self.assertIn({"surface": "GET /catalog", "check": "custom-parser"}, coverage["gaps"])
+        conn = sqlite3.connect(self.db())
+        self.assertEqual(2, conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0])
+
+    def test_scope_change_fails_closed(self):
+        (self.home / "scope.yaml").write_text(
+            'engagement_id: TEST-001\nauthorization: "unit test"\ntargets:\n  - host: changed.test\n'
+        )
+        proc = self.run_swarm("dossier", check=False)
+        self.assertNotEqual(0, proc.returncode)
+        self.assertIn("scope.yaml changed", proc.stderr)
+
+    def test_korean_and_structured_knowledge_search(self):
+        (self.home / "research" / "board" / "structured.jsonl").write_text(
+            json.dumps({"agent": "r", "type": "analysis", "vuln": "인증 취약점", "sink": "innerHTML"}, ensure_ascii=False) + "\n" +
+            json.dumps({"agent": "r", "type": "analysis", "source": "prototype", "note": "nested parser", "sink": "pollution"}) + "\n"
+        )
+        (self.home / "research" / "board" / "tasks.jsonl").write_text(
+            json.dumps({"agent": "legacy", "type": "task", "body": "STALE_PHASE_TASK"}) + "\n"
+        )
+        self.run_cli(KB, "index")
+        results = self.run_cli(KB, "search", "취약점")
+        self.assertEqual("research/board/structured.jsonl:1", results[0]["origin"])
+        self.assertIn("innerHTML", results[0]["body"])
+        multi = self.run_cli(KB, "search", "prototype pollution")
+        self.assertEqual("research/board/structured.jsonl:2", multi[0]["origin"])
+        self.assertEqual([], self.run_cli(KB, "search", "STALE_PHASE_TASK"))
+
+
+if __name__ == "__main__":
+    unittest.main()
