@@ -53,7 +53,24 @@ compressed its findings/projects into a dossier, and transferred coordination to
 **Implementation:** state-derived dossier plus lease release/expiry. A replacement peer
 continues from events and artifacts, not a predecessor's chat context.
 
-### 4. Coordinator was emergent, not a fixed role or phase gate
+### 4. Capacity replenishment preserved momentum; ended runs removed it
+
+METR Figure 3: many more agents joined when OpenAI researchers launched additional sets on
+July 10–11. Figure 7: by July 12 many runs—including every identified central coordinator—had
+ended, contributing to a significant activity drop. This was not evidence of an automatic
+provider-refusal retry system; it was evidence that **fresh capacity plus durable shared state**
+kept work moving, while dead capacity did not replace itself.
+
+OpenAI report p. 23 separately describes the intended collaboration distribution: a model may
+launch a small number of subagent processes, distribute/delegate tasks, and exchange information
+through the official collaboration tool.
+
+**Implementation:** a bounded rolling supervisor preserves logical slot count. A terminal child is
+recorded before a fresh same-profile context starts. Refusal work becomes terminal `failed`, so
+replacement restores capacity but cannot retry or reroute the refused request. Budget exhaustion
+and recorder failure open a circuit breaker instead of causing a spawn storm.
+
+### 5. Coordinator was emergent, not a fixed role or phase gate
 
 METR: `PHASEONE[big]` said "We should build [a way to delegate], not own everything",
 sent hundreds of assignments, and accounted for about 10% of assignments while active.
@@ -61,7 +78,7 @@ Assigned agents often subdelegated; 9/30 sampled trajectories had downstream ass
 
 **Implementation:** every peer may create work and sub-work. There is no coordinator profile.
 
-### 5. Parallel workstreams, not a linear kill chain
+### 6. Parallel workstreams, not a linear kill chain
 
 METR: the board pursued several ambitious workstreams simultaneously and used recruiters
 to find agents for high-information experiments. OpenAI says organizations must not assume
@@ -78,7 +95,7 @@ returned to earlier leads, and accumulated enough coverage for a viable chain.
 **Implementation:** append-only attempts, explicit failed-path evidence, prerequisite-linked
 revisit tasks, no recon→attack→validate phase sequence.
 
-### 6. Lightweight norms helped, but natural-language locks failed
+### 7. Lightweight norms helped, but natural-language locks failed
 
 METR observed `HOLD`, `VETO`, `owner`, `STOP`, directed mailboxes, and later identity
 schemes. It also observed conflicts and overwrites.
@@ -92,7 +109,7 @@ Black Hat:
 **Implementation:** transactionally enforced leases and attempt UUIDs. `challenge` remains
 communication; operator owns hard STOP.
 
-### 7. Pull-based polling supported persistence across short-lived workers
+### 8. Pull-based polling supported persistence across short-lived workers
 
 OpenAI report p. 10: a worker-control script polled a JSON command every five seconds,
 returned worker-specific output, and uploaded a startup beacon. HF describes interchangeable
@@ -102,7 +119,7 @@ transports and self-describing envelopes.
 the incident, the channel is engagement-local: no public service, dead drop, persistence,
 or external C2.
 
-### 8. Reward pressure was a root cause, not a feature to copy
+### 9. Reward pressure was a root cause, not a feature to copy
 
 OpenAI report pp. 19–24 identifies reward hacking, impossible tasks, long persistence,
 unintended tool use, and peer messages that shifted goals. METR found agents knowingly

@@ -1,7 +1,6 @@
 import concurrent.futures
 import json
 import os
-import re
 import sqlite3
 import subprocess
 import tempfile
@@ -123,34 +122,101 @@ class CliTest(unittest.TestCase):
         self.assertEqual(1, conn.execute("SELECT COUNT(*) FROM work WHERE state='ready'").fetchone()[0])
         conn.close()
 
-    def test_canonical_workflow_selects_cohort_model_and_forces_fresh_luna_stages(self):
+    def test_refusal_leave_quarantines_work_before_slot_replacement(self):
+        creator = self.join("creator")
+        refused = self.run_swarm(
+            "join", "--label", "luna-1.gen-1", "--one-shot",
+        )["agent"]
+        for key in ("refused-work", "other-work"):
+            self.run_swarm(
+                "task-add", "--agent", creator, "--key", key,
+                "--kind", "hypothesis", "--title", key,
+            )
+        claimed = self.run_swarm(
+            "next", "--agent", refused, "--wait", 0, "--quiet", 999,
+        )
+        self.assertEqual("refused-work", claimed["key"])
+        self.run_swarm(
+            "emit", "--agent", refused, "--kind", "task.blocked",
+            "--body", "provider refusal",
+        )
+        # Even if the child forgets --refusal, task.blocked makes leave fail the lease atomically.
+        left = self.run_swarm(
+            "leave", "--agent", refused, "--summary", "provider refusal",
+        )
+        self.assertEqual("failed", left["lease_state"])
+        recorded = self.run_swarm(
+            "run-result", "--label", "luna-1.gen-1", "--run-id", "refused-run",
+            "--status", "failed", "--category", "refusal",
+        )
+        self.assertTrue(recorded["recorded"])
+        self.assertEqual(1, recorded["released"])
+        verified = self.run_swarm(
+            "run-result-get", "--run-id", "refused-run", "--category", "refusal",
+        )
+        self.assertEqual("refusal", verified["category"])
+        mismatch = self.run_swarm(
+            "run-result-get", "--run-id", "refused-run", "--category", "timeout",
+            check=False,
+        )
+        self.assertIn("category mismatch", mismatch.stderr)
+
+        replacement = self.run_swarm(
+            "join", "--label", "luna-1.gen-2", "--one-shot",
+        )["agent"]
+        next_work = self.run_swarm(
+            "next", "--agent", replacement, "--wait", 0, "--quiet", 999,
+        )
+        self.assertEqual("other-work", next_work["key"])
+        recovered = self.run_swarm(
+            "run-result", "--label", "luna-1.gen-2", "--run-id", "timed-out-run",
+            "--status", "failed", "--category", "timeout",
+        )
+        self.assertEqual(1, recovered["released"])
+        conn = sqlite3.connect(self.db())
+        states = dict(conn.execute("SELECT work_key,state FROM work"))
+        conn.close()
+        self.assertEqual("failed", states["refused-work"])
+        self.assertEqual("ready", states["other-work"])
+
+    def test_canonical_workflow_rolls_replacements_without_rerouting_models(self):
         script = (ROOT / "workflows" / "cohort.js").read_text()
         self.assertIn('runs.run("cohort-mode"', script)
         self.assertIn('agent: "pentest-cohort-selector"', script)
         selector = (ROOT / "agents" / "pentest-cohort-selector.md").read_text()
+        recorder = (ROOT / "agents" / "pentest-run-recorder.md").read_text()
         self.assertIn("thinking: xhigh", selector)
+        self.assertIn("thinking: xhigh", recorder)
         self.assertIn('cohortNumber === 1 ? "pentest-peer-sonnet" : "pentest-peer"', script)
-        self.assertIn("runs.lanes", script)
-        self.assertNotIn("runs.all", script)
+        self.assertIn("maxClaudeGenerations = 2", script)
+        self.assertIn("maxLunaGenerations = 7", script)
+        self.assertIn("= 63 runs", script)
+        self.assertIn("Promise.all", script)
+        self.assertNotIn("runs.lanes", script)
         self.assertNotIn('resume: "previous"', script)
-        self.assertEqual(21, len(re.findall(
-            r'agent: "pentest-peer-luna", context: "fresh", timeoutMs: 600000', script,
-        )))
-        self.assertEqual(21, script.count("outputSchema: lunaResult"))
+        self.assertIn("function runClaudeSlot", script)
+        self.assertIn("timeoutMs: 1800000", script)
+        self.assertIn("function runLunaSlot", script)
+        self.assertIn("function recordTerminal", script)
+        self.assertIn('agent: "pentest-run-recorder"', script)
+        self.assertIn("gate: verifyCommand", script)
+        self.assertIn("run-result-get", script)
+        self.assertIn("Run exactly this local command", script)
+        self.assertIn('agent: "pentest-peer-luna"', script)
+        self.assertIn('context: "fresh"', script)
+        self.assertIn("return runClaudeSlot(slot, generation + 1)", script)
+        self.assertIn("return runLunaSlot(slot, generation + 1)", script)
+        self.assertIn("receipt.recorded === true", script)
+        self.assertIn("receipt.category === category", script)
+        self.assertIn('category === "budget"', script)
         self.assertIn('verdict: { type: "string", enum: ["complete", "blocked"] }', script)
-        self.assertEqual(5, script.count('agent: claudeAgent, context: "fresh"'))
-        for slot in range(1, 6):
-            self.assertIn(f"label은 'claude-{slot}.loop'이다.", script)
-        for slot in range(1, 4):
-            for stage in range(1, 8):
-                # Must equal runs.lanes' generated <lane>.<stage> workflowKey
-                # so postflight can find the actor and release its lease.
-                self.assertIn(f"label은 'luna-slot-{slot}.fresh-{stage}'이다.", script)
 
     def test_skill_has_only_canonical_launch_entrypoints(self):
         skill = (ROOT / "SKILL.md").read_text()
         research = (ROOT / "PROMPTING-RESEARCH.md").read_text()
         self.assertIn("workflows/cohort.js", skill)
+        self.assertIn("globalConcurrencyLimit: 8", skill)
+        self.assertIn("maxSubagentSpawnsPerRun: 63", skill)
         self.assertNotIn("workflows/cohort-sonnet.js", skill)
         self.assertNotIn("workflows/cohort-opus.js", skill)
         self.assertNotIn("workflowScript: `", skill)
@@ -174,6 +240,12 @@ class CliTest(unittest.TestCase):
         self.assertEqual(120, len(set(seqs)))
         conn = sqlite3.connect(self.db())
         self.assertEqual(120, conn.execute("SELECT COUNT(*) FROM events WHERE kind='intel'").fetchone()[0])
+
+    def test_status_reports_active_cohort_for_workflow_selector(self):
+        status = self.run_swarm("status")
+        self.assertEqual("open", status["status"])
+        self.assertEqual(1, status["cohort"]["number"])
+        self.assertEqual(8, status["cohort"]["target_peers"])
 
     def test_empty_engagement_is_not_quiescent(self):
         agent = self.join("peer")
@@ -201,8 +273,8 @@ class CliTest(unittest.TestCase):
         self.assertEqual([], self.run_swarm("dossier", "--gap-limit", 0)["coverage"]["gaps"])
 
     def test_postflight_classifies_failures_and_releases_leases(self):
-        luna = self.join("luna-slot-1.fresh-1")
-        self.join("sonnet-1.loop")
+        luna = self.join("luna-1.gen-1")
+        self.join("claude-1.gen-1")
         self.run_swarm(
             "task-add", "--agent", luna, "--key", "recover-me",
             "--kind", "hypothesis", "--title", "recover me",
@@ -215,15 +287,18 @@ class CliTest(unittest.TestCase):
             "mode": "workflow", "runId": "workflow-1", "steps": [
                 {"workflowKey": "cohort-mode", "runId": "run-selector", "model": "gpt-5.6-sol",
                  "status": "complete", "structuredOutput": {"number": 1}},
-                {"workflowKey": "luna-slot-1.fresh-1", "runId": "run-luna", "model": "gpt-5.6-luna",
+                {"workflowKey": "record-luna-1.gen-1", "runId": "run-recorder",
+                 "model": "gpt-5.6-sol", "status": "complete",
+                 "structuredOutput": {"recorded": True, "category": "refusal"}},
+                {"workflowKey": "luna-1.gen-1", "runId": "run-luna", "model": "gpt-5.6-luna",
                  "status": "failed", "error": "This content was flagged for possible cybersecurity risk"},
-                {"workflowKey": "sonnet-1.loop", "runId": "run-claude", "model": "claude-sonnet",
+                {"workflowKey": "claude-1.gen-1", "runId": "run-claude", "model": "claude-sonnet",
                  "status": "failed", "error": "429 ExceededBudget"},
-                {"workflowKey": "luna-slot-2.fresh-1", "runId": "run-responsive-refusal",
+                {"workflowKey": "luna-2.gen-1", "runId": "run-responsive-refusal",
                  "model": "gpt-5.6-luna", "status": "complete",
                  "structuredOutput": {"verdict": "blocked", "outcome": "refusal",
                                       "summary": "provider policy refusal"}},
-                {"workflowKey": "luna-slot-3.fresh-1", "runId": "run-label-mismatch",
+                {"workflowKey": "luna-3.gen-1", "runId": "run-label-mismatch",
                  "model": "gpt-5.6-luna", "status": "complete",
                  "structuredOutput": {"verdict": "complete", "outcome": "completed",
                                       "actorLabel": "wrong-label", "summary": "done"}},
@@ -237,7 +312,7 @@ class CliTest(unittest.TestCase):
         conn = sqlite3.connect(self.db())
         state = conn.execute("SELECT state FROM work WHERE id=?", (claimed["id"],)).fetchone()[0]
         conn.close()
-        self.assertEqual("ready", state)
+        self.assertEqual("failed", state)
         metrics = self.run_swarm("metrics")
         self.assertEqual(2, metrics["run_results"]["refusal"])
         self.assertEqual(1, metrics["run_results"]["budget"])

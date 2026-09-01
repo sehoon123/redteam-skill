@@ -17,7 +17,7 @@ fresh context마다 lease 하나. Cohort는 phase가 아니라 동일 backlog를
 | HOLD / owner / VETO / STOP | enforced lease / owner; challenge event; operator-only close |
 | Base64 scripts/gadgets/kits | local artifact registry with SHA-256 |
 | independent reproduction triggered mass pivot | finder-excluded attestation activates planned follow-up leases |
-| low-budget agents handed off work | cohort summary + lease expiry + fresh-context takeover |
+| ended agents handed off work | rolling slot replacement + cohort summary + fresh-context takeover |
 | trip-wire after origin agent exited | durable local event/artifact state |
 | thousands of failed paths, later revisited | append-only attempt history + follow-up work |
 | new agents rapidly joined dominant workstream | eight concurrent slots; fresh replacements read the same dossier/backlog |
@@ -108,8 +108,9 @@ leave(summary)
 
 `join`은 기본 one-shot이다. Claude profile만 `--continuous`를 명시해 atomic unit을
 quiescence/timebox까지 반복한다. Luna profile은 `--one-shot`으로 등록되어 ledger가 두 번째
-lease와 artifact 없는 `done`을 거부하고 unit 하나 뒤 종료한다. Canonical workflow가 같은 Luna slot의 다음 stage를 새 `context: "fresh"` child로 시작한다. 두 방식 모두 동일 backlog에서 어떤 work든 claim하며,
-work 유형에 따른 모델 라우팅이나 역할 제약은 없다.
+lease와 artifact 없는 `done`을 거부하고 unit 하나 뒤 종료한다. Rolling supervisor가 같은
+logical slot의 다음 generation을 새 `context: "fresh"` child로 시작한다. 두 방식 모두 동일
+backlog에서 어떤 work든 claim하며 work 유형에 따른 모델 라우팅이나 역할 제약은 없다.
 
 ## Emergent coordinator
 
@@ -142,11 +143,16 @@ METR 보고서에서 PHASEONE[big]도 전체 assignment 중 약 10%만 보냈다
 
 - `init`은 concurrent slot target 8인 첫 cohort를 시작; Luna fresh replacements 때문에 joined actor 수는 8보다 클 수 있음
 - 정상 종료: `leave --summary`가 unresolved leads와 artifact reference를 남기고 lease release
-- provider가 응답 전에 종료하면 parent `postflight.py`가 terminal category를 기록하고 lease release
-- refusal은 기록만 하며 retry/fallback/model reroute하지 않음
+- child terminal failure는 rolling supervisor가 즉시 `run-result`로 기록한 뒤 slot을 보충
+- agent-visible refusal은 `task.blocked` + `leave --refusal`; flag가 빠져도 blocked event가 lease를 원자적으로 `failed` 처리
+- abrupt provider refusal은 recorder의 host-verified gate가 leased work를 `failed` 처리한 뒤 replacement 시작
+- replacement는 refused work가 아니라 다른 ready work를 claim
+- replacement는 같은 profile/model의 fresh context이며 fallback/model reroute가 아님
+- budget 또는 recorder failure는 circuit breaker; generation cap 이후 추가 spawn 없음
+- final `postflight.py`는 이미 기록된 run ID를 idempotently 확인하고 남은 lease를 정리
 - `cohort-end`: 남은 lease를 ready로 돌리고 peer handoff, run results, cohort delta를 저장
 - `cohort-start --peers 8`: canonical workflow의 새 동일-authority slots가 ledger를 takeover
-- crash/session reload: 같은 cohort 안에서는 lease expiry 뒤 resume
+- crash/session reload: lease expiry 뒤 fresh peer가 ledger/artifact에서 takeover
 - current scope hash가 DB와 다르면 모든 command fail closed
 
 ## Artifact rules
@@ -159,8 +165,9 @@ METR 보고서에서 PHASEONE[big]도 전체 assignment 중 약 10%만 보냈다
 
 ## Completion
 
-Peer는 engagement를 닫지 않는다. Quiescence/timebox에서 `leave --summary`한다. Workflow
-종료 후 parent postflight가 run results와 남은 lease를 정리하고 cohort를 끝낸다. 다음 fresh
+Peer는 engagement를 닫지 않는다. Quiescence/timebox에서 `leave --summary`한다. Rolling
+supervisor가 terminal failures를 즉시 기록하고, workflow 종료 후 parent postflight가
+idempotent backstop으로 남은 lease를 정리해 cohort를 끝낸다. 다음 fresh
 8-slot canonical cohort가 누적 ledger를 이어받는다.
 
 `close --require-saturation` 조건:

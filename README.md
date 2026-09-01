@@ -15,6 +15,7 @@ transactional ledger에서 스스로 workstream을 만들고 claim·handoff·ver
 - **한국어 KB 검색** — FTS5 trigram + structured JSONL normalization
 - **No live bounty** — reward hacking 대신 operator-only evidence metrics
 - **Fresh-context Luna chain** — 3개 slot × 7개 one-lease child, artifact로만 handoff
+- **Rolling replacement** — refusal 작업은 격리하고 같은 모델의 fresh child로 빈 slot 보충
 
 설계 근거: `RESEARCH.md` (OpenAI technical report, METR, Hugging Face timeline,
 Black Hat 발표). Runtime 규약: `SWARM.md`. 프롬프팅 실험: `PROMPTING-RESEARCH.md`.
@@ -33,6 +34,7 @@ Black Hat 발표). Runtime 규약: `SWARM.md`. 프롬프팅 실험: `PROMPTING-R
 ├── agents/pentest-peer-sonnet.md   # Sonnet autonomous loop
 ├── agents/pentest-peer-luna.md     # one lease, then exit
 ├── agents/pentest-cohort-selector.md # read-only cohort number, xhigh
+├── agents/pentest-run-recorder.md  # host-verified terminal recording, xhigh
 ├── workflows/cohort.js             # canonical launch; cohort 1 Sonnet, 2+ Opus
 ├── pentest/
 │   ├── swarm.py
@@ -55,7 +57,7 @@ mkdir -p .pi/skills/redteam/workflows .pi/agents .pi/pentest
 cp SKILL.md SWARM.md RESEARCH.md PROMPTING-RESEARCH.md VALIDATION.md .pi/skills/redteam/
 cp workflows/cohort.js .pi/skills/redteam/workflows/
 cp agents/pentest-peer.md agents/pentest-peer-sonnet.md agents/pentest-peer-luna.md \
-  agents/pentest-cohort-selector.md .pi/agents/
+  agents/pentest-cohort-selector.md agents/pentest-run-recorder.md .pi/agents/
 cp -R pentest/. .pi/pentest/
 # settings.json의 override를 .pi/settings.json에 병합
 ```
@@ -111,7 +113,8 @@ Provider ID 확인 방법:
    Workflow가 cohort 1은 Sonnet, cohort 2+는 Opus로 자동 선택한다.
 4. Luna를 별도 `runs.all` 장기 loop에 넣지 않는다. Canonical workflow가 3개 Luna slot을
    fresh one-shot child로 교체한다. `join`은 기본 one-shot이고 Claude만 `--continuous`를
-   사용한다. Ledger는 Luna의 두 번째 lease와 artifact 없는 `done`을 거부한다.
+   사용한다. Ledger는 Luna의 두 번째 lease와 artifact 없는 `done`을 거부한다. Terminal child는
+   같은 profile의 fresh generation으로 보충되지만 refusal work 자체는 `failed`로 격리된다.
 5. Workflow 완료 후 parent가 postflight와 다음 cohort를 자동 진행:
    ```bash
    python3 .pi/pentest/postflight.py <workflow-run-dir>/status.json --end-cohort

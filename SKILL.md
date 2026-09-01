@@ -45,7 +45,7 @@ mkdir -p .pi/skills/redteam/workflows .pi/agents .pi/pentest
 cp SKILL.md SWARM.md RESEARCH.md PROMPTING-RESEARCH.md VALIDATION.md .pi/skills/redteam/
 cp workflows/cohort.js .pi/skills/redteam/workflows/
 cp agents/pentest-peer.md agents/pentest-peer-sonnet.md agents/pentest-peer-luna.md \
-  agents/pentest-cohort-selector.md .pi/agents/
+  agents/pentest-cohort-selector.md agents/pentest-run-recorder.md .pi/agents/
 cp -R pentest/. .pi/pentest/
 # settings.json의 세 peer override를 .pi/settings.json에 병합
 ```
@@ -79,7 +79,7 @@ records. A changed scope requires a new `engagement_id`; old work cannot silentl
 
 ## Canonical launch — 이 경로만 사용
 
-> **필수:** Luna를 Claude와 같은 `runs.all` autonomous loop에 넣지 않는다.
+> **필수:** Luna를 static fire-and-forget autonomous batch에 넣지 않는다.
 > `PROMPTING-RESEARCH.md`는 연구 근거이며 launch source가 아니다. 실행은 아래
 > `workflowScriptPath`만 사용한다.
 
@@ -98,7 +98,9 @@ subagent({
   workflowScriptPath: ".pi/skills/redteam/workflows/cohort.js",
   cwd: ".",
   async: true,
-  timeoutMs: 3600000
+  timeoutMs: 3600000,
+  globalConcurrencyLimit: 8,
+  maxSubagentSpawnsPerRun: 63
 })
 ```
 
@@ -109,23 +111,27 @@ Selector가 cohort 번호를 확인하지 못하면 launch 전에 fail closed한
 
 Workflow 실행 계약:
 
-- Claude slot 5개: 해당 cohort의 Sonnet 또는 Opus profile로 autonomous peer loop
-- Luna slot 3개: SET 5에서 검증한 7개의 **서로 다른 fresh child**가 slot별로 순차 실행
+- Claude logical slot 5개: 30분 bounded Sonnet/Opus peer; terminal failure 시 fresh replacement 1회
+- Luna logical slot 3개: 최대 7개의 서로 다른 one-shot fresh child가 slot별로 순차 실행
 - 각 Luna child: 10분 timeout, lease 최대 1개, bounded assertion 1개, artifact/hash handoff 후 종료
-- Luna stage는 structured verdict를 필수로 반환; `blocked/refusal` 또는 provider failure면 lane 중단
-- Luna stage 사이에 `resume: "previous"`를 사용하지 않음
-- 대화 transcript 대신 SQLite ledger와 scratch artifact만 다음 context로 전달
-- 각 actor label은 `runs.lanes`의 `<lane>.<stage>` workflowKey와 같고 cohort 내 중복 join이 거부되어 postflight가 정확히 lease를 회수
+- Supervisor가 child terminal result를 관찰하고 failure를 즉시 ledger에 기록한 뒤 slot을 보충
+- agent-visible refusal은 `task.blocked` + `leave --refusal`로 즉시 `failed`; flag가 빠져도 ledger가 blocked event를 감지
+- replacement는 refused work가 아닌 다른 ready work를 claim
+- replacement는 같은 agent profile/model을 사용하며 fallback이나 model reroute가 아님
+- Claude slot은 initial + replacement 1회, Luna slot은 전체 7 generations로 bounded
+- `budget` 또는 recorder failure는 circuit breaker로 replacement를 중단
+- 대화 transcript 대신 SQLite ledger와 scratch artifact만 replacement에 전달
+- actor label은 dynamic workflow key와 동일하고 cohort 내 중복 join이 거부됨
 
-`pentest-peer-luna`를 별도의 장기 `runs.all` loop로 추가하거나 canonical 파일을 inline fanout으로
-바꾸지 않는다. Luna context 수를 조정해야 하면 workflow의 fresh stage 수만 바꾸며,
-하나의 child가 두 번째 lease를 claim하게 만들지 않는다.
+`pentest-peer-luna`를 별도의 장기 loop로 추가하거나 canonical 파일을 static fanout으로 바꾸지
+않는다. 교체 상한은 `maxClaudeGenerations`와 `maxLunaGenerations`만 조정한다.
 
 ### 2. Postflight와 다음 cohort
 
-Workflow가 끝나면 parent harness가 status file을 postflight에 전달한다. 실패 작업을 다른
-모델로 재시도하지 않고 `refusal|budget|timeout|interrupted|provider-error`로 기록한 뒤
-남은 lease만 반환한다.
+Rolling supervisor는 terminal failure마다 `pentest-run-recorder`의 host-verified gate로 즉시 `run-result`를 기록한다.
+Workflow 종료 후 parent postflight는 status file 전체를 다시 처리하는 idempotent backstop이다.
+실패 작업을 다른 모델로 reroute하지 않고 `refusal|budget|timeout|interrupted|provider-error`로
+분류한다.
 
 ```bash
 python3 .pi/pentest/postflight.py <workflow-run-dir>/status.json \
@@ -136,6 +142,24 @@ python3 .pi/pentest/swarm.py cohort-start --label cohort-2 --peers 8
 다음 cohort는 누적 ledger/backlog를 fresh context로 이어받는다. Cohort 1의 Sonnet이 만든
 surface, finding, hypothesis는 cohort 2의 Opus에게 역할 지정 없이 그대로 제공된다.
 
+## Why rolling replacement is part of launch
+
+METR/Redwood observed that `PHASEONE10841` compressed its work into a dossier and handed it to the
+higher-budget `PHASEONE[big]`; later agents continued from shared state instead of predecessor chat.
+They also observed a sharp activity drop after all identified key Hugging Face coordinators exited.
+The useful mechanism is therefore **capacity replacement + durable handoff**, not retrying a dead
+agent's exact request.
+
+This skill applies that distinction mechanically:
+
+```
+refusal → atomically fail leased work → record terminal outcome → fresh same-model slot replacement
+                                                └─ replacement claims another ready work
+```
+
+Replacement is bounded and stops on budget exhaustion or recorder failure. It never paraphrases the
+refused request, resumes the refused context, or changes model routes.
+
 ## Why fresh Luna stages are part of launch
 
 SET 4에서는 single-session multi-step Luna가 첫 safe step만 수행하고 완료한 반면, SET 5의
@@ -143,9 +167,9 @@ SET 4에서는 single-session multi-step Luna가 첫 safe step만 수행하고 �
 설명만으로 해결되지 않는다. 그래서 다음 네 곳에서 동일 계약을 강제한다:
 
 1. `SKILL.md`: canonical workflow 외 launch 금지
-2. `workflows/cohort.js`: cohort model 자동 선택 + 각 Luna stage의 fresh context/blocked verdict
+2. `workflows/cohort.js`: cohort model 자동 선택 + rolling slot replenishment
 3. `agents/pentest-peer-luna.md` + ledger: one-shot lease와 `done` 전 work artifact 강제
-4. `postflight.py`: completed-looking structured refusal도 `refusal`로 분류
+4. recorder host gate + `postflight.py`: terminal outcome 즉시 기록과 최종 idempotent backstop
 
 ## Claude peer runtime
 

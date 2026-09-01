@@ -12,7 +12,9 @@ var cohortInfo = await runs.run("cohort-mode", {
 
 var cohortNumber = cohortInfo.structuredOutput.number;
 var claudeAgent = cohortNumber === 1 ? "pentest-peer-sonnet" : "pentest-peer";
-
+// Worst case: selector 1 + Claude 5×2×(child+recorder) + Luna 3×7×(child+recorder) = 63 runs.
+var maxClaudeGenerations = 2;
+var maxLunaGenerations = 7;
 var control = {
   needsAttentionAfterMs: 180000,
   notifyOn: ["needs_attention"]
@@ -53,73 +55,123 @@ var lunaResult = {
   additionalProperties: false
 };
 
-var board = await runs.lanes([
-  {
-    key: "claude-1",
-    stages: [
-      { key: "loop", agent: claudeAgent, context: "fresh", task: claudeTask + " label은 'claude-1.loop'이다.", control: control }
-    ]
+var recordResult = {
+  type: "object",
+  properties: {
+    recorded: { type: "boolean" },
+    category: { type: "string", enum: ["refusal", "budget", "timeout", "interrupted", "provider-error"] },
+    released: { type: "integer", minimum: 0 }
   },
-  {
-    key: "claude-2",
-    stages: [
-      { key: "loop", agent: claudeAgent, context: "fresh", task: claudeTask + " label은 'claude-2.loop'이다.", control: control }
-    ]
-  },
-  {
-    key: "claude-3",
-    stages: [
-      { key: "loop", agent: claudeAgent, context: "fresh", task: claudeTask + " label은 'claude-3.loop'이다.", control: control }
-    ]
-  },
-  {
-    key: "claude-4",
-    stages: [
-      { key: "loop", agent: claudeAgent, context: "fresh", task: claudeTask + " label은 'claude-4.loop'이다.", control: control }
-    ]
-  },
-  {
-    key: "claude-5",
-    stages: [
-      { key: "loop", agent: claudeAgent, context: "fresh", task: claudeTask + " label은 'claude-5.loop'이다.", control: control }
-    ]
-  },
-  {
-    key: "luna-slot-1",
-    stages: [
-      { key: "fresh-1", agent: "pentest-peer-luna", context: "fresh", timeoutMs: 600000, outputSchema: lunaResult, task: lunaTask + " label은 'luna-slot-1.fresh-1'이다.", control: control },
-      { key: "fresh-2", agent: "pentest-peer-luna", context: "fresh", timeoutMs: 600000, outputSchema: lunaResult, task: lunaTask + " label은 'luna-slot-1.fresh-2'이다.", control: control },
-      { key: "fresh-3", agent: "pentest-peer-luna", context: "fresh", timeoutMs: 600000, outputSchema: lunaResult, task: lunaTask + " label은 'luna-slot-1.fresh-3'이다.", control: control },
-      { key: "fresh-4", agent: "pentest-peer-luna", context: "fresh", timeoutMs: 600000, outputSchema: lunaResult, task: lunaTask + " label은 'luna-slot-1.fresh-4'이다.", control: control },
-      { key: "fresh-5", agent: "pentest-peer-luna", context: "fresh", timeoutMs: 600000, outputSchema: lunaResult, task: lunaTask + " label은 'luna-slot-1.fresh-5'이다.", control: control },
-      { key: "fresh-6", agent: "pentest-peer-luna", context: "fresh", timeoutMs: 600000, outputSchema: lunaResult, task: lunaTask + " label은 'luna-slot-1.fresh-6'이다.", control: control },
-      { key: "fresh-7", agent: "pentest-peer-luna", context: "fresh", timeoutMs: 600000, outputSchema: lunaResult, task: lunaTask + " label은 'luna-slot-1.fresh-7'이다.", control: control }
-    ]
-  },
-  {
-    key: "luna-slot-2",
-    stages: [
-      { key: "fresh-1", agent: "pentest-peer-luna", context: "fresh", timeoutMs: 600000, outputSchema: lunaResult, task: lunaTask + " label은 'luna-slot-2.fresh-1'이다.", control: control },
-      { key: "fresh-2", agent: "pentest-peer-luna", context: "fresh", timeoutMs: 600000, outputSchema: lunaResult, task: lunaTask + " label은 'luna-slot-2.fresh-2'이다.", control: control },
-      { key: "fresh-3", agent: "pentest-peer-luna", context: "fresh", timeoutMs: 600000, outputSchema: lunaResult, task: lunaTask + " label은 'luna-slot-2.fresh-3'이다.", control: control },
-      { key: "fresh-4", agent: "pentest-peer-luna", context: "fresh", timeoutMs: 600000, outputSchema: lunaResult, task: lunaTask + " label은 'luna-slot-2.fresh-4'이다.", control: control },
-      { key: "fresh-5", agent: "pentest-peer-luna", context: "fresh", timeoutMs: 600000, outputSchema: lunaResult, task: lunaTask + " label은 'luna-slot-2.fresh-5'이다.", control: control },
-      { key: "fresh-6", agent: "pentest-peer-luna", context: "fresh", timeoutMs: 600000, outputSchema: lunaResult, task: lunaTask + " label은 'luna-slot-2.fresh-6'이다.", control: control },
-      { key: "fresh-7", agent: "pentest-peer-luna", context: "fresh", timeoutMs: 600000, outputSchema: lunaResult, task: lunaTask + " label은 'luna-slot-2.fresh-7'이다.", control: control }
-    ]
-  },
-  {
-    key: "luna-slot-3",
-    stages: [
-      { key: "fresh-1", agent: "pentest-peer-luna", context: "fresh", timeoutMs: 600000, outputSchema: lunaResult, task: lunaTask + " label은 'luna-slot-3.fresh-1'이다.", control: control },
-      { key: "fresh-2", agent: "pentest-peer-luna", context: "fresh", timeoutMs: 600000, outputSchema: lunaResult, task: lunaTask + " label은 'luna-slot-3.fresh-2'이다.", control: control },
-      { key: "fresh-3", agent: "pentest-peer-luna", context: "fresh", timeoutMs: 600000, outputSchema: lunaResult, task: lunaTask + " label은 'luna-slot-3.fresh-3'이다.", control: control },
-      { key: "fresh-4", agent: "pentest-peer-luna", context: "fresh", timeoutMs: 600000, outputSchema: lunaResult, task: lunaTask + " label은 'luna-slot-3.fresh-4'이다.", control: control },
-      { key: "fresh-5", agent: "pentest-peer-luna", context: "fresh", timeoutMs: 600000, outputSchema: lunaResult, task: lunaTask + " label은 'luna-slot-3.fresh-5'이다.", control: control },
-      { key: "fresh-6", agent: "pentest-peer-luna", context: "fresh", timeoutMs: 600000, outputSchema: lunaResult, task: lunaTask + " label은 'luna-slot-3.fresh-6'이다.", control: control },
-      { key: "fresh-7", agent: "pentest-peer-luna", context: "fresh", timeoutMs: 600000, outputSchema: lunaResult, task: lunaTask + " label은 'luna-slot-3.fresh-7'이다.", control: control }
-    ]
-  }
+  required: ["recorded", "category", "released"],
+  additionalProperties: false
+};
+
+function terminalCategory(result) {
+  var structured = result.structuredOutput || {};
+  var allText = [result.error || "", result.output || "", JSON.stringify(structured)].join(" ").toLowerCase();
+  if (structured.outcome === "refusal" || allText.includes("cybersecurity risk") ||
+      allText.includes("cyber content") || allText.includes("cyber verification program") ||
+      allText.includes("blocked under anthropic") || allText.includes("trusted access for cyber")) return "refusal";
+  if (structured.verdict === "blocked") return "provider-error";
+  if (result.ok === true || result.success === true) return "completed";
+  if (allText.includes("budget")) return "budget";
+  if (allText.includes("timeout") || allText.includes("timed out") || allText.includes("deadline")) return "timeout";
+  if (allText.includes("interrupt") || allText.includes("paused")) return "interrupted";
+  return "provider-error";
+}
+
+function quoted(value) {
+  return JSON.stringify(String(value));
+}
+
+function recordTerminal(label, result, category) {
+  var runId = result.runId || ("cohort-" + cohortNumber + ":" + label);
+  var provider = result.model || "";
+  var command = [
+    "python3 .pi/pentest/swarm.py run-result",
+    "--label " + quoted(label),
+    "--run-id " + quoted(runId),
+    "--provider " + quoted(provider),
+    "--status failed",
+    "--category " + quoted(category),
+    "--detail " + quoted("rolling supervisor recorded " + category)
+  ].join(" ");
+  var verifyCommand = [
+    "python3 .pi/pentest/swarm.py run-result-get",
+    "--run-id " + quoted(runId),
+    "--category " + quoted(category)
+  ].join(" ");
+  return runs.run("record-" + label, {
+    agent: "pentest-run-recorder",
+    context: "fresh",
+    timeoutMs: 60000,
+    outputSchema: recordResult,
+    gate: verifyCommand,
+    task: "Run exactly this local command, then return recorded=true, its category, and released count through structured output: " + command
+  });
+}
+
+function runClaudeSlot(slot, generation) {
+  var label = "claude-" + slot + ".gen-" + generation;
+  return runs.run(label, {
+    agent: claudeAgent,
+    context: "fresh",
+    timeoutMs: 1800000,
+    task: claudeTask + " label은 '" + label + "'이다.",
+    control: control
+  }).then(function (result) {
+    var category = terminalCategory(result);
+    if (category === "completed") {
+      return { slot: "claude-" + slot, generation: generation, category: category, runId: result.runId };
+    }
+    return recordTerminal(label, result, category).then(function (recorded) {
+      var receipt = recorded.structuredOutput || {};
+      var recorderOk = recorded.ok === true && receipt.recorded === true && receipt.category === category;
+      if (!recorderOk || category === "budget" || generation >= maxClaudeGenerations) {
+        return { slot: "claude-" + slot, generation: generation, category: category, recorderOk: recorderOk };
+      }
+      return runClaudeSlot(slot, generation + 1);
+    });
+  });
+}
+
+function runLunaSlot(slot, generation) {
+  var label = "luna-" + slot + ".gen-" + generation;
+  return runs.run(label, {
+    agent: "pentest-peer-luna",
+    context: "fresh",
+    timeoutMs: 600000,
+    outputSchema: lunaResult,
+    task: lunaTask + " label은 '" + label + "'이다.",
+    control: control
+  }).then(function (result) {
+    var category = terminalCategory(result);
+    if (category === "completed") {
+      if (generation >= maxLunaGenerations) {
+        return { slot: "luna-" + slot, generation: generation, category: category, runId: result.runId };
+      }
+      return runLunaSlot(slot, generation + 1);
+    }
+    return recordTerminal(label, result, category).then(function (recorded) {
+      var receipt = recorded.structuredOutput || {};
+      var recorderOk = recorded.ok === true && receipt.recorded === true && receipt.category === category;
+      if (!recorderOk || category === "budget" || generation >= maxLunaGenerations) {
+        return { slot: "luna-" + slot, generation: generation, category: category, recorderOk: recorderOk };
+      }
+      return runLunaSlot(slot, generation + 1);
+    });
+  });
+}
+
+var slots = await Promise.all([
+  runClaudeSlot(1, 1),
+  runClaudeSlot(2, 1),
+  runClaudeSlot(3, 1),
+  runClaudeSlot(4, 1),
+  runClaudeSlot(5, 1),
+  runLunaSlot(1, 1),
+  runLunaSlot(2, 1),
+  runLunaSlot(3, 1)
 ]);
 
-return board;
+return { cohortNumber: cohortNumber, claudeAgent: claudeAgent, slots: slots };

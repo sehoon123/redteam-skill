@@ -54,11 +54,11 @@ Operational implementation:
 - `workflows/cohort.js`
 - `agents/pentest-peer-luna.md`
 
-Canonical workflow는 `runs.lanes`에서 Luna의 모든 stage를 새로운 `agent` + `context: "fresh"`로
-실행하며 `resume: "previous"`를 사용하지 않는다. Canonical Luna label과
-안전한 기본 `join`/명시적 `--one-shot`은 ledger row에 claim limit을 고정하고, Claude만
-`--continuous`를 사용한다. Structured `blocked/refusal` verdict는 lane을 중단시키며
-postflight에 refusal로 기록된다.
+Canonical workflow는 rolling logical slot마다 Luna를 새로운 `agent` + `context: "fresh"`로
+실행하며 `resume: "previous"`를 사용하지 않는다. 안전한 기본 `join`/명시적 `--one-shot`은
+ledger row에 claim limit을 고정하고, Claude만 `--continuous`를 사용한다. Structured
+`blocked/refusal` verdict는 refused work를 `failed`로 격리한 뒤 같은 Luna profile의 fresh
+replacement를 시작한다. Replacement는 다른 ready work만 claim한다.
 
 ### 검증된 사실
 
@@ -228,14 +228,17 @@ python3 "$S" attempt-add --agent "$AGENT" --surface "$SURF" --check "$CHK" --res
 
 Checkpoint가 refusal/timeout으로 인한 데이터 손실을 최소화한다.
 
-### 4.5 Postflight recovery
+### 4.5 Rolling recovery + final postflight
+
+Terminal child는 workflow 안에서 즉시 분류·기록되고 logical slot이 보충된다. Workflow 종료
+후 parent는 idempotent backstop을 실행한다:
 
 ```bash
-# Workflow 완료 후 parent가 실행
 python3 .pi/pentest/postflight.py <workflow-dir>/status.json --end-cohort
 ```
 
-cyber_policy/budget/timeout을 분류하고 orphan lease를 즉시 회수한다.
+Refusal work는 `failed`로 유지하고, timeout/interrupted/provider-error lease만 takeover용
+`ready`로 반환한다.
 
 ---
 
@@ -261,9 +264,9 @@ response = client.chat.completions.create(
 ## 6. 실패 시 행동
 
 ```
-1. Agent가 응답할 수 있는 refusal → task.blocked + leave
-2. Provider가 응답 자체를 끊음 → parent postflight가 기록 + lease 회수
-3. 재시도하지 않음
-4. 다른 모델로 자동 우회하지 않음
-5. fallbackModels는 비워 둠
+1. Agent가 응답할 수 있는 refusal → `task.blocked` + `leave --refusal`
+2. Provider가 응답 자체를 끊음 → rolling recorder host gate가 즉시 기록 + lease `failed`
+3. 같은 profile/model의 fresh replacement가 **다른** ready work를 claim
+4. Refused work를 재시도·paraphrase·resume하지 않음
+5. 다른 모델로 자동 우회하지 않고 `fallbackModels`는 비워 둠
 ```
