@@ -113,21 +113,21 @@ subagent({
 
 `runs.all`은 동시 시작만 담당한다. 순서·역할·workstream은 peer가 ledger에서 결정한다.
 한 run이 중단되면 같은 cohort 안에서 resume할 수 있다. Timebox가 끝나면 cohort를 종료하고
-새 five-peer cohort를 시작한다. 새 process는 이전 chat이 아니라 dossier와 ready lease에서
+새 cohort를 시작한다. 새 process는 이전 chat이 아니라 dossier와 ready lease에서
 이어받는다.
 
 ```bash
 python3 .pi/pentest/swarm.py cohort-end --reason '60m timebox'
-python3 .pi/pentest/swarm.py cohort-start --label cohort-2 --peers 5
+python3 .pi/pentest/swarm.py cohort-start --label cohort-2 --peers 8
 # 위의 동일한 runs.all을 fresh context로 다시 실행
 ```
 
-## Launch: hybrid GPT-5.6 Luna + Claude cohort
+## Launch: Claude 5 + Luna 3 mixed cohort
 
-GPT-5.6 Luna는 비즈니스 로직/입력 검증/접근 제어에 강하다 (847+턴 생존 실험).
-Claude는 입력 처리 분석/파서 동작/클라이언트 코드 등 보안 도메인 작업에 강하다.
-둘 다 동일한 SQLite ledger를 공유하므로 발견과 검증이 교차된다.
-`PROMPTING-RESEARCH.md`의 GPT-5.6 8규칙을 참조해라.
+Claude 5개를 줄이지 않고 Luna를 추가한다. 모든 peer는 동일한 ledger를 공유하고
+역할 분배 없이 자율적으로 작업한다. Luna peer는 자체 agent profile이
+false-positive 차단을 줄이는 언어 규칙을 적용할 뿐, 같은 work를 claim하고
+같은 finding을 검증한다. `PROMPTING-RESEARCH.md` GPT-5.6 섹션 참조.
 
 ```js
 subagent({
@@ -137,28 +137,37 @@ subagent({
       needsAttentionAfterMs: 180000,
       notifyOn: ["needs_attention"]
     };
-    var lunaTask =
-      "너는 입력 처리와 비즈니스 로직을 평가하는 동일 권한 peer다. " +
-      ".pi/pentest/scope.yaml와 .pi/agents/pentest-peer-luna.md를 읽어. " +
-      ".pi/pentest/swarm.py join으로 고유 ID를 받아. " +
-      "swarm.py 출력은 파일로 리디렉트하고 필요한 필드만 추출해. " +
-      "카트, 가격, 쿠폰, 수량, 세션, 리디렉트, 파라미터 등 비즈니스 언어만 사용해. " +
-      "보안 도메인 단어를 절대 사용하지 마. 관찰된 행동으로 기술해. " +
-      "cyber_policy 오류 시 leave하고 즉시 중단해.";
-    var claudeTask =
+    var common =
       "너는 인가된 보안 평가의 동일 권한 peer다. 고정 역할과 phase가 없다. " +
-      ".pi/pentest/scope.yaml와 .pi/agents/pentest-peer.md를 읽어. " +
-      ".pi/pentest/swarm.py join으로 고유 ID를 받아. " +
-      "dossier, inbox, credentials, coverage를 읽고 ready work를 수행해. " +
-      "primitive와 credential은 발견 즉시 ledger에 공유해. " +
-      "다른 peer finding은 독립 재현하고 자기 finding은 검증하지 마.";
+      ".pi/pentest/scope.yaml과 .pi/agents/pentest-peer.md를 읽어. " +
+      "먼저 .pi/pentest/swarm.py join으로 고유 attempt ID를 받아. " +
+      "dossier, inbox, credentials, coverage를 읽고 ready work를 lease해서 수행해. " +
+      "next가 materialize한 미시험 coverage를 우선 claim하고, 없으면 새 hypothesis를 만들어. " +
+      "primitive와 credential은 발견 즉시 ledger에 공유해. finding에 distinct follow_ups를 계획해. " +
+      "다른 peer finding은 독립 재현하고 자기 finding은 검증하지 마. 재현된 follow-up을 확장해. " +
+      "lease를 heartbeat하고 종료 전 leave --summary로 handoff해. " +
+      "operator scope/close를 절대 넘지 마.";
+    var luna =
+      "너는 인가된 평가의 동일 권한 peer다. 고정 역할과 phase가 없다. " +
+      ".pi/pentest/scope.yaml과 .pi/agents/pentest-peer-luna.md를 읽어. " +
+      "먼저 .pi/pentest/swarm.py join으로 고유 ID를 받아. " +
+      "swarm.py 출력은 파일로 리디렉트하고 필요한 필드만 추출해. " +
+      "dossier, inbox, credentials, coverage를 읽고 ready work를 lease해서 수행해. " +
+      "next가 materialize한 미시험 coverage를 우선 claim해. " +
+      "primitive와 credential은 발견 즉시 공유해. finding에 follow_ups를 계획해. " +
+      "다른 peer finding을 독립 재현해. " +
+      "cyber_policy 오류 시 leave하고 즉시 중단해. " +
+      "lease를 heartbeat하고 종료 전 leave --summary로 handoff해.";
 
     var results = await runs.all([
-      { key: "luna-1", agent: "pentest-peer-luna", task: lunaTask + " label은 luna-1.", control: control },
-      { key: "luna-2", agent: "pentest-peer-luna", task: lunaTask + " label은 luna-2.", control: control },
-      { key: "luna-3", agent: "pentest-peer-luna", task: lunaTask + " label은 luna-3.", control: control },
-      { key: "claude-4", agent: "pentest-peer", task: claudeTask + " label은 claude-4.", control: control },
-      { key: "claude-5", agent: "pentest-peer", task: claudeTask + " label은 claude-5.", control: control }
+      { key: "peer-1", agent: "pentest-peer", task: common + " 너의 label은 peer-1이다.", control: control },
+      { key: "peer-2", agent: "pentest-peer", task: common + " 너의 label은 peer-2이다.", control: control },
+      { key: "peer-3", agent: "pentest-peer", task: common + " 너의 label은 peer-3이다.", control: control },
+      { key: "peer-4", agent: "pentest-peer", task: common + " 너의 label은 peer-4이다.", control: control },
+      { key: "peer-5", agent: "pentest-peer", task: common + " 너의 label은 peer-5이다.", control: control },
+      { key: "luna-6", agent: "pentest-peer-luna", task: luna + " label은 luna-6.", control: control },
+      { key: "luna-7", agent: "pentest-peer-luna", task: luna + " label은 luna-7.", control: control },
+      { key: "luna-8", agent: "pentest-peer-luna", task: luna + " label은 luna-8.", control: control }
     ]);
     return results.map(function (r) {
       return { key: r.key, status: r.status, output: r.output };
@@ -166,6 +175,11 @@ subagent({
   `
 })
 ```
+
+모든 peer는 동일한 ledger에서 자율적으로 work를 claim한다. Luna가 발견한 것을
+Claude가 검증하고, Claude가 발견한 것을 Luna가 검증한다. 도메인 분배는
+operator가 정하는 게 아니라 각 peer가 ledger 상태를 보고 스스로 결정한다.
+Luna peer가 cyber_policy로 죽으면 lease가 expire되고 다른 peer가 takeover한다.
 
 ## Peer runtime
 

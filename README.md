@@ -14,7 +14,7 @@ transactional ledger에서 스스로 workstream을 만들고 claim·handoff·ver
 - **Dossier handoff** — 새 peer가 이전 chat 없이 현재 상태를 즉시 복구
 - **한국어 KB 검색** — FTS5 trigram + structured JSONL normalization
 - **No live bounty** — reward hacking 대신 operator-only evidence metrics
-- **Hybrid GPT-5.6 Luna + Claude cohorts** — Luna는 비즈니스, Claude는 보안 도메인
+- **Mixed Claude + Luna cohorts** — Claude 5 + Luna 3, 도메인 분배 없이 자율 분업
 
 설계 근거: `RESEARCH.md` (OpenAI technical report, METR, Hugging Face timeline,
 Black Hat 발표). Runtime 규약: `SWARM.md`. 프롬프팅 실험: `PROMPTING-RESEARCH.md`.
