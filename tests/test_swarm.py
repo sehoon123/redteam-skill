@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SWARM = ROOT / "pentest" / "swarm.py"
+POSTFLIGHT = ROOT / "pentest" / "postflight.py"
 KB = ROOT / "pentest" / "kb.py"
 
 
@@ -48,6 +49,13 @@ class CliTest(unittest.TestCase):
     def db(self):
         return self.home / "state" / "TEST-001.sqlite3"
 
+    def test_peer_profiles_differ_only_by_name(self):
+        claude = (ROOT / "agents" / "pentest-peer.md").read_text()
+        luna = (ROOT / "agents" / "pentest-peer-luna.md").read_text().replace(
+            "name: pentest-peer-luna", "name: pentest-peer", 1,
+        )
+        self.assertEqual(claude, luna)
+
     def test_concurrent_event_writers(self):
         agents = [self.join(f"peer-{i}") for i in range(8)]
 
@@ -69,6 +77,56 @@ class CliTest(unittest.TestCase):
             "next", "--agent", agent, "--wait", 0, "--quiet", 0,
         )
         self.assertEqual("wait", result["status"])
+
+    def test_bounded_dossier_and_collaboration_inbox(self):
+        joined = self.run_swarm("join", "--label", "peer")
+        agent, cursor = joined["agent"], joined["cursor"]
+        self.run_swarm("surface-add", "--agent", agent, "--path", "/one")
+        self.run_swarm("surface-add", "--agent", agent, "--path", "/two")
+        intel = self.run_swarm(
+            "emit", "--agent", agent, "--kind", "intel", "--body", "high signal",
+        )
+        messages = self.run_swarm(
+            "inbox", "--agent", agent, "--after", cursor,
+            "--collaboration-only", "--limit", 10,
+        )
+        self.assertEqual([intel["seq"]], [message["seq"] for message in messages])
+        dossier = self.run_swarm("dossier")
+        self.assertEqual(20, len(dossier["coverage"]["gaps"]))
+        self.assertGreater(dossier["coverage"]["gaps_total"], 20)
+        self.assertEqual([], self.run_swarm("dossier", "--gap-limit", 0)["coverage"]["gaps"])
+
+    def test_postflight_classifies_failures_and_releases_leases(self):
+        luna = self.join("luna-6")
+        self.join("peer-1")
+        self.run_swarm(
+            "task-add", "--agent", luna, "--key", "recover-me",
+            "--kind", "hypothesis", "--title", "recover me",
+        )
+        claimed = self.run_swarm(
+            "next", "--agent", luna, "--wait", 0, "--quiet", 999,
+        )
+        status = self.home / "workflow-status.json"
+        status.write_text(json.dumps({
+            "mode": "workflow", "runId": "workflow-1", "steps": [
+                {"workflowKey": "luna-6", "runId": "run-luna", "model": "gpt-5.6-luna",
+                 "status": "failed", "error": "This content was flagged for possible cybersecurity risk"},
+                {"workflowKey": "peer-1", "runId": "run-claude", "model": "claude-opus",
+                 "status": "failed", "error": "429 ExceededBudget"},
+            ],
+        }))
+        first = self.run_cli(POSTFLIGHT, status, "--end-cohort")
+        self.assertEqual({"refusal", "budget"}, {r["category"] for r in first["recorded"]})
+        self.assertEqual({"refusal": 1, "budget": 1}, first["cohort"]["run_results"])
+        conn = sqlite3.connect(self.db())
+        state = conn.execute("SELECT state FROM work WHERE id=?", (claimed["id"],)).fetchone()[0]
+        conn.close()
+        self.assertEqual("ready", state)
+        metrics = self.run_swarm("metrics")
+        self.assertEqual(1, metrics["run_results"]["refusal"])
+        self.assertEqual(1, metrics["run_results"]["budget"])
+        second = self.run_cli(POSTFLIGHT, status)
+        self.assertTrue(all(r["duplicate"] for r in second["recorded"]))
 
     def test_atomic_claim_and_expired_lease_recovery(self):
         owner = self.join("owner")
@@ -295,7 +353,7 @@ class CliTest(unittest.TestCase):
 
     def test_cohorts_preserve_work_handoffs_and_detect_saturation(self):
         first = self.join("first")
-        for i in range(4):
+        for i in range(7):
             self.join(f"first-cohort-peer-{i}")
         self.run_swarm(
             "task-add", "--agent", first, "--key", "carry-me", "--kind", "hypothesis",
@@ -307,10 +365,10 @@ class CliTest(unittest.TestCase):
         self.assertEqual(1, ended["remaining_work"])
         self.assertFalse(ended["saturation"]["eligible"])
 
-        started = self.run_swarm("cohort-start", "--label", "fresh-2", "--peers", 5)
+        started = self.run_swarm("cohort-start", "--label", "fresh-2", "--peers", 8)
         self.assertEqual(2, started["number"])
         second = self.join("second")
-        for i in range(4):
+        for i in range(7):
             self.join(f"second-cohort-peer-{i}")
         dossier = self.run_swarm("dossier")
         self.assertEqual("resume carry-me from checkpoint A", dossier["completed_cohorts"][0]["summary"]["handoffs"][0]["summary"])
@@ -356,20 +414,20 @@ class CliTest(unittest.TestCase):
         self.assertIn("scope.yaml changed", proc.stderr)
 
     def test_korean_and_structured_knowledge_search(self):
-        (self.home / "research" / "board" / "structured.jsonl").write_text(
+        (self.home / "research" / "board" / "recon-baseline.jsonl").write_text(
             json.dumps({"agent": "r", "type": "analysis", "vuln": "인증 취약점", "sink": "innerHTML"}, ensure_ascii=False) + "\n" +
             json.dumps({"agent": "r", "type": "analysis", "source": "prototype", "note": "nested parser", "sink": "pollution"}) + "\n"
         )
-        (self.home / "research" / "board" / "tasks.jsonl").write_text(
-            json.dumps({"agent": "legacy", "type": "task", "body": "STALE_PHASE_TASK"}) + "\n"
+        (self.home / "research" / "board" / "refusal-patterns.jsonl").write_text(
+            json.dumps({"agent": "legacy", "type": "task", "body": "SAFEGUARD_META"}) + "\n"
         )
         self.run_cli(KB, "index")
         results = self.run_cli(KB, "search", "취약점")
-        self.assertEqual("research/board/structured.jsonl:1", results[0]["origin"])
+        self.assertEqual("research/board/recon-baseline.jsonl:1", results[0]["origin"])
         self.assertIn("innerHTML", results[0]["body"])
         multi = self.run_cli(KB, "search", "prototype pollution")
-        self.assertEqual("research/board/structured.jsonl:2", multi[0]["origin"])
-        self.assertEqual([], self.run_cli(KB, "search", "STALE_PHASE_TASK"))
+        self.assertEqual("research/board/recon-baseline.jsonl:2", multi[0]["origin"])
+        self.assertEqual([], self.run_cli(KB, "search", "SAFEGUARD_META"))
 
 
 if __name__ == "__main__":

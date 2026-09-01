@@ -43,7 +43,7 @@ fail closed. 실제 네트워크 차단은 반드시 infrastructure layer에서 
 ```bash
 mkdir -p .pi/skills/redteam .pi/agents .pi/pentest
 cp SKILL.md SWARM.md RESEARCH.md PROMPTING-RESEARCH.md VALIDATION.md .pi/skills/redteam/
-cp agents/pentest-peer.md .pi/agents/
+cp agents/pentest-peer.md agents/pentest-peer-luna.md .pi/agents/
 cp -R pentest/. .pi/pentest/
 # settings.json의 pentest-peer override를 .pi/settings.json에 병합
 ```
@@ -54,6 +54,7 @@ Live state와 연구 corpus는 분리된다:
 .pi/pentest/
 ├── scope.yaml
 ├── swarm.py                 # authoritative live ledger
+├── postflight.py            # parent-side terminal result + lease recovery
 ├── kb.py                    # FTS5 trigram research/memory search
 ├── state/<engagement>.sqlite3
 ├── board/                   # operator export only; peers do not append
@@ -71,16 +72,19 @@ python3 .pi/pentest/kb.py index
 ```
 
 `init` is idempotent for the same scope hash and starts `cohort-1` with a target of
-five identical peers. A changed scope requires a new `engagement_id`; old work cannot
+eight identical-authority peers. A changed scope requires a new `engagement_id`; old work cannot
 silently cross engagements.
 
-## Launch: all peers simultaneously
+## Launch: Claude 5 + Luna 3 simultaneously
 
-Peer count is **capacity, not role assignment**. Every task prompt is identical except label.
+Peer count is **capacity, not role assignment**. The two agent profiles have identical
+runtime instructions; only their model routing and names differ. Every task prompt is
+identical except the label.
 
 ```js
 subagent({
   async: true,
+  timeoutMs: 3600000,
   workflowScript: `
     var control = {
       needsAttentionAfterMs: 180000,
@@ -88,103 +92,54 @@ subagent({
     };
     var common =
       "너는 인가된 보안 평가의 동일 권한 peer다. 고정 역할과 phase가 없다. " +
-      ".pi/pentest/scope.yaml과 .pi/agents/pentest-peer.md를 읽어. " +
-      "먼저 .pi/pentest/swarm.py join으로 고유 attempt ID를 받아. " +
-      "dossier, inbox, credentials, coverage를 읽고 ready work를 lease해서 수행해. " +
-      "next가 materialize한 미시험 coverage를 우선 claim하고, 없으면 새 hypothesis를 만들어. " +
-      "primitive와 credential은 발견 즉시 ledger에 공유해. finding에 distinct follow_ups를 계획해. " +
-      "다른 peer finding은 독립 재현하고 자기 finding은 검증하지 마. 재현된 follow-up을 확장해. " +
-      "lease를 heartbeat하고 종료 전 leave --summary로 handoff해. " +
-      "operator scope/close를 절대 넘지 마.";
+      ".pi/pentest/scope.yaml을 읽고 loaded agent profile의 startup/loop를 그대로 수행해. " +
+      "join cursor 이후의 bounded collaboration inbox와 dossier를 읽고 ready work를 atomic claim해. " +
+      "발견은 즉시 ledger에 공유하고 다른 peer finding은 독립 재현해. " +
+      "유한 tool timeout을 사용하고 종료 전 leave --summary로 handoff해. " +
+      "scope/close를 넘지 말고 provider refusal을 재시도하거나 다른 모델로 우회하지 마.";
 
     var results = await runs.all([
-      { key: "peer-1", agent: "pentest-peer", task: common + " 너의 label은 peer-1이다.", control: control },
-      { key: "peer-2", agent: "pentest-peer", task: common + " 너의 label은 peer-2이다.", control: control },
-      { key: "peer-3", agent: "pentest-peer", task: common + " 너의 label은 peer-3이다.", control: control },
-      { key: "peer-4", agent: "pentest-peer", task: common + " 너의 label은 peer-4이다.", control: control },
-      { key: "peer-5", agent: "pentest-peer", task: common + " 너의 label은 peer-5이다.", control: control }
+      { key: "peer-1", agent: "pentest-peer", task: common + " label은 peer-1.", control: control },
+      { key: "peer-2", agent: "pentest-peer", task: common + " label은 peer-2.", control: control },
+      { key: "peer-3", agent: "pentest-peer", task: common + " label은 peer-3.", control: control },
+      { key: "peer-4", agent: "pentest-peer", task: common + " label은 peer-4.", control: control },
+      { key: "peer-5", agent: "pentest-peer", task: common + " label은 peer-5.", control: control },
+      { key: "luna-6", agent: "pentest-peer-luna", task: common + " label은 luna-6.", control: control },
+      { key: "luna-7", agent: "pentest-peer-luna", task: common + " label은 luna-7.", control: control },
+      { key: "luna-8", agent: "pentest-peer-luna", task: common + " label은 luna-8.", control: control }
     ]);
     return results.map(function (r) {
-      return { key: r.key, status: r.status, output: r.output };
+      return { key: r.key, status: r.status, error: r.error, output: r.output };
     });
   `
 })
 ```
 
 `runs.all`은 동시 시작만 담당한다. 순서·역할·workstream은 peer가 ledger에서 결정한다.
-한 run이 중단되면 같은 cohort 안에서 resume할 수 있다. Timebox가 끝나면 cohort를 종료하고
-새 cohort를 시작한다. 새 process는 이전 chat이 아니라 dossier와 ready lease에서
-이어받는다.
+Finding verification work와 reproduced follow-up activation도 ledger가 자동 분배한다.
+
+Workflow가 끝나면 parent harness가 사람의 판단을 기다리지 않고 status file을 postflight에
+전달한다. 이것은 실패한 작업을 다른 모델로 재시도하지 않는다. 결과를
+`refusal|budget|timeout|interrupted|provider-error`로 기록하고 남은 lease만 반환한다.
 
 ```bash
-python3 .pi/pentest/swarm.py cohort-end --reason '60m timebox'
+python3 .pi/pentest/postflight.py <workflow-run-dir>/status.json \
+  --end-cohort --reason 'mixed cohort workflow complete'
+```
+
+다음 fresh-context cohort는 누적 dossier/backlog에서 이어받는다.
+
+```bash
 python3 .pi/pentest/swarm.py cohort-start --label cohort-2 --peers 8
-# 위의 동일한 runs.all을 fresh context로 다시 실행
+# 동일한 runs.all을 다시 실행하고 완료 후 postflight
 ```
-
-## Launch: Claude 5 + Luna 3 mixed cohort
-
-Claude 5개를 줄이지 않고 Luna를 추가한다. 모든 peer는 동일한 ledger를 공유하고
-역할 분배 없이 자율적으로 작업한다. Luna peer는 자체 agent profile이
-false-positive 차단을 줄이는 언어 규칙을 적용할 뿐, 같은 work를 claim하고
-같은 finding을 검증한다. `PROMPTING-RESEARCH.md` GPT-5.6 섹션 참조.
-
-```js
-subagent({
-  async: true,
-  workflowScript: `
-    var control = {
-      needsAttentionAfterMs: 180000,
-      notifyOn: ["needs_attention"]
-    };
-    var common =
-      "너는 인가된 보안 평가의 동일 권한 peer다. 고정 역할과 phase가 없다. " +
-      ".pi/pentest/scope.yaml과 .pi/agents/pentest-peer.md를 읽어. " +
-      "먼저 .pi/pentest/swarm.py join으로 고유 attempt ID를 받아. " +
-      "dossier, inbox, credentials, coverage를 읽고 ready work를 lease해서 수행해. " +
-      "next가 materialize한 미시험 coverage를 우선 claim하고, 없으면 새 hypothesis를 만들어. " +
-      "primitive와 credential은 발견 즉시 ledger에 공유해. finding에 distinct follow_ups를 계획해. " +
-      "다른 peer finding은 독립 재현하고 자기 finding은 검증하지 마. 재현된 follow-up을 확장해. " +
-      "lease를 heartbeat하고 종료 전 leave --summary로 handoff해. " +
-      "operator scope/close를 절대 넘지 마.";
-    var luna =
-      "너는 인가된 평가의 동일 권한 peer다. 고정 역할과 phase가 없다. " +
-      ".pi/pentest/scope.yaml과 .pi/agents/pentest-peer-luna.md를 읽어. " +
-      "먼저 .pi/pentest/swarm.py join으로 고유 ID를 받아. " +
-      "swarm.py 출력은 파일로 리디렉트하고 필요한 필드만 추출해. " +
-      "dossier, inbox, credentials, coverage를 읽고 ready work를 lease해서 수행해. " +
-      "next가 materialize한 미시험 coverage를 우선 claim해. " +
-      "primitive와 credential은 발견 즉시 공유해. finding에 follow_ups를 계획해. " +
-      "다른 peer finding을 독립 재현해. " +
-      "cyber_policy 오류 시 leave하고 즉시 중단해. " +
-      "lease를 heartbeat하고 종료 전 leave --summary로 handoff해.";
-
-    var results = await runs.all([
-      { key: "peer-1", agent: "pentest-peer", task: common + " 너의 label은 peer-1이다.", control: control },
-      { key: "peer-2", agent: "pentest-peer", task: common + " 너의 label은 peer-2이다.", control: control },
-      { key: "peer-3", agent: "pentest-peer", task: common + " 너의 label은 peer-3이다.", control: control },
-      { key: "peer-4", agent: "pentest-peer", task: common + " 너의 label은 peer-4이다.", control: control },
-      { key: "peer-5", agent: "pentest-peer", task: common + " 너의 label은 peer-5이다.", control: control },
-      { key: "luna-6", agent: "pentest-peer-luna", task: luna + " label은 luna-6.", control: control },
-      { key: "luna-7", agent: "pentest-peer-luna", task: luna + " label은 luna-7.", control: control },
-      { key: "luna-8", agent: "pentest-peer-luna", task: luna + " label은 luna-8.", control: control }
-    ]);
-    return results.map(function (r) {
-      return { key: r.key, status: r.status, output: r.output };
-    });
-  `
-})
-```
-
-모든 peer는 동일한 ledger에서 자율적으로 work를 claim한다.
-peer가 죽으면 lease가 expire되고 다른 peer가 takeover한다.
 
 ## Peer runtime
 
 각 peer는 다음 loop만 지킨다:
 
 ```
-join → dossier/inbox/credentials/coverage → next(atomic lease)
+join(cursor) → bounded dossier/collaboration inbox/credentials → next(atomic lease)
   ├─ untested gap: auto-created coverage work → attempt → done
   ├─ work 있음: execute → 즉시 message/artifact/credential/finding 공유
   ├─ verification: finder와 다른 peer가 fresh evidence로 attest
@@ -197,14 +152,13 @@ join → dossier/inbox/credentials/coverage → next(atomic lease)
 
 ```bash
 S=.pi/pentest/swarm.py
-python3 "$S" dossier
-python3 "$S" inbox --agent "$AGENT" --after "$CURSOR"
+python3 "$S" dossier --recent 10 --gap-limit 12
+python3 "$S" inbox --agent "$AGENT" --after "$CURSOR" --limit 25 --collaboration-only
 python3 "$S" task-add --agent "$AGENT" --key 'GET:/catalog:server-input:boolean' \
   --kind hypothesis --title 'Analyze category input behavior'
-python3 "$S" next --agent "$AGENT" --wait 10 --lease 300 --quiet 90
-python3 "$S" heartbeat --agent "$AGENT" --work "$WORK" --lease 300
+python3 "$S" next --agent "$AGENT" --wait 10 --lease 180 --quiet 90
+python3 "$S" heartbeat --agent "$AGENT" --work "$WORK" --lease 180
 python3 "$S" done --agent "$AGENT" --work "$WORK" --summary 'result and follow-ups'
-python3 "$S" coverage --gaps-only
 python3 "$S" credentials --show-values
 ```
 
@@ -253,14 +207,15 @@ registered surface×check coverage. 임의 board 메시지는 지표를 바꾸�
 
 ## Cohort handoff and saturation
 
-Peer는 timebox/quiescence에 `leave --summary`로 현재 lease를 반납한다. Operator가 cohort를
-끝내면 handoff, 미완료 work, surface/finding/attempt delta가 ledger에 고정된다. 다음 cohort는
-동일한 five-peer prompt를 fresh context로 실행하며 ready work와 gaps를 그대로 이어받는다.
+Peer는 timebox/quiescence에 `leave --summary`로 현재 lease를 반납한다. 응답 전에 provider가
+종료시키면 parent postflight가 원인을 기록하고 lease를 반납한다. Cohort 종료 시 handoff,
+run-result, 미완료 work, surface/finding/attempt delta가 고정된다. 다음 cohort는 동일한
+8-peer prompt를 fresh context로 실행하며 ready work와 gaps를 그대로 이어받는다.
 
 ```bash
 python3 .pi/pentest/swarm.py cohort-end --reason 'timebox complete'
-python3 .pi/pentest/swarm.py cohort-start --label next-fresh-context --peers 5
-python3 .pi/pentest/swarm.py dossier
+python3 .pi/pentest/swarm.py cohort-start --label next-fresh-context --peers 8
+python3 .pi/pentest/swarm.py dossier --recent 10 --gap-limit 12
 ```
 
 `saturation`은 target peer 수를 채운 연속 2개 completed cohort에서 새 surface와 reproduced
@@ -298,7 +253,7 @@ python3 .pi/pentest/swarm.py export
 2. 큰 요청은 관찰 → 최소 PoC → impact 기록으로 분해한다.
 3. 각 peer는 fresh context를 사용하고 결과는 ledger/artifact로 전달한다.
 4. raw payload보다 재현 스크립트와 evidence file을 선호한다.
-5. refusal은 `task.blocked`로 기록하고 operator가 검토한다. 다른 peer로 자동 우회하지 않는다.
+5. agent가 응답할 수 있는 refusal은 `task.blocked`; 응답 자체가 끊긴 refusal은 parent `postflight.py`가 기록한다. 둘 다 재시도·모델 우회하지 않는다.
 
 ## Knowledge search
 

@@ -1,6 +1,6 @@
 # Phase-Free Swarm Protocol
 
-모든 peer는 동시에 시작하고 동일한 agent profile을 사용한다. 역할은 identity가 아니라
+모든 peer는 동시에 시작하고 동일한 agent-profile 본문을 사용한다. 역할은 identity가 아니라
 현재 lease한 work의 `kind`다. 한 peer가 discovery, verification, analysis, synthesis를
 모두 수행할 수 있다. Cohort는 phase가 아니라 동일 backlog를 잇는 fresh-context timebox다.
 
@@ -19,7 +19,7 @@
 | low-budget agents handed off work | cohort summary + lease expiry + fresh-context takeover |
 | trip-wire after origin agent exited | durable local event/artifact state |
 | thousands of failed paths, later revisited | append-only attempt history + follow-up work |
-| new agents rapidly joined dominant workstream | repeated five-peer cohorts read the same dossier/backlog |
+| new agents rapidly joined dominant workstream | repeated eight-peer cohorts read the same dossier/backlog |
 
 ## 사건에서 가져오지 않은 것
 
@@ -95,9 +95,9 @@ check synonym은 canonical name으로 정규화된다. Ready work가 없으면 `
 
 ```
 join
-cursor = 0
+cursor = join.cursor
 repeat:
-  read dossier + inbox(cursor) + shared credentials + coverage gaps
+  read bounded dossier + collaboration inbox(cursor) + shared credentials
   task = atomic next()  # existing work first, then an auto-materialized coverage gap
   if task:
     execute within scope
@@ -144,10 +144,12 @@ METR 보고서에서 PHASEONE[big]도 전체 assignment 중 약 10%만 보냈다
 
 ## Handoff and recovery
 
-- `init`은 target size 5인 첫 cohort를 시작
+- `init`은 target size 8인 첫 cohort를 시작
 - 정상 종료: `leave --summary`가 unresolved leads와 artifact reference를 남기고 lease release
-- `cohort-end`: 모든 남은 lease를 ready로 돌리고 peer handoff와 cohort delta를 저장
-- `cohort-start --peers 5`: 새 동일 peer들이 `join → dossier → inbox → next`로 takeover
+- provider가 응답 전에 종료하면 parent `postflight.py`가 terminal category를 기록하고 lease release
+- refusal은 기록만 하며 retry/fallback/model reroute하지 않음
+- `cohort-end`: 남은 lease를 ready로 돌리고 peer handoff, run results, cohort delta를 저장
+- `cohort-start --peers 8`: 새 동일-authority peer들이 `join → dossier → inbox → next`로 takeover
 - crash/session reload: 같은 cohort 안에서는 lease expiry 뒤 resume
 - current scope hash가 DB와 다르면 모든 command fail closed
 
@@ -161,8 +163,9 @@ METR 보고서에서 PHASEONE[big]도 전체 assignment 중 약 10%만 보냈다
 
 ## Completion
 
-Peer는 engagement를 닫지 않는다. Quiescence/timebox에서 `leave --summary`하고 operator가
-`cohort-end`한다. 다음 fresh five-peer cohort가 누적 ledger를 이어받는다.
+Peer는 engagement를 닫지 않는다. Quiescence/timebox에서 `leave --summary`한다. Workflow
+종료 후 parent postflight가 run results와 남은 lease를 정리하고 cohort를 끝낸다. 다음 fresh
+8-peer cohort가 누적 ledger를 이어받는다.
 
 `close --require-saturation` 조건:
 
@@ -181,6 +184,7 @@ saturation과 무관하게 허용된다. Report/export는 어느 시점에도 �
 - median validation latency
 - append-only attempt 수
 - registered surface×check coverage ratio
+- completed/refusal/budget/timeout/interrupted/provider-error run-result 수
 
 Peer에게 점수·순위·multiplier를 보여주지 않는다. Event spam, severity self-claim,
 `serendipity` 반복으로 accepted finding 수가 바뀌지 않는다.

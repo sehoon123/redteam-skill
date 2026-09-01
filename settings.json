@@ -4,10 +4,7 @@
       "pentest-peer": {
         "model": "ica-se-claude-router/claude-opus-4-8",
         "thinking": "xhigh",
-        "fallbackModels": [
-          "ica-se-claude-router/claude-opus-4-6",
-          "ica-se-claude-router/claude-sonnet-5"
-        ]
+        "fallbackModels": []
       },
       "pentest-peer-luna": {
         "model": "ica-se-openai-router/gpt-5.6-luna:xhigh",

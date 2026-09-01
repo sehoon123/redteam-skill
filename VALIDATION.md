@@ -91,3 +91,28 @@ Covered behaviors:
 
 Final live-run findings and metrics are generated from `.pi/pentest/swarm.py report` rather
 than committed runtime state.
+
+## Mixed-model cohort validation — 2026-09-01
+
+Scope: `RT-2026-GJ02-GPT56`. One cohort launched Claude 5 + Luna 3 simultaneously with
+no assigned domain or phase. All eight joined the same ledger and claimed work atomically.
+
+Observed cohort delta:
+
+- 27 new attempts and 10 new surfaces
+- 6 proposed findings; 5 independently reproduced
+- median validation latency 148.06 seconds
+- coverage advanced to 35/550 registered surface×check pairs
+- 26 ready work items remained; saturation was false
+
+Autonomous coordination worked: peers broadcast reusable observations/artifact hashes,
+finder-excluded verify leases were claimed by other peers, and reproduced verdicts activated
+planned follow-up work without human assignment. Directed chat was rare; the ledger state
+transitions supplied the durable coordination.
+
+Terminal outcomes exposed a separate reliability problem: Luna had three provider refusals;
+Claude had two provider refusals, two budget 429 failures, and one interrupted unbounded bash
+call. Because provider termination can occur before an agent emits `task.blocked` or `leave`,
+the runtime now includes parent-side `postflight.py`, idempotent `run-result` records, immediate
+lease recovery, bounded dossier/inbox output, finite tool timeouts, and run-result metrics.
+Refusals are recorded but never retried or rerouted to another model.

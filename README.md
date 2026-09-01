@@ -9,7 +9,7 @@ transactional ledger에서 스스로 workstream을 만들고 claim·handoff·ver
 - **SQLite event + lease ledger** — atomic claim, dead-agent takeover, session reload 복구
 - **Evidence-first findings** — SHA-256 artifact + finder와 다른 peer의 reproduction
 - **Append-only coverage** — 상충 결과와 실패 경로를 덮어쓰지 않음
-- **Persistent five-peer cohorts** — fresh context가 누적 work/evidence/handoff를 이어받음
+- **Persistent mixed cohorts** — Claude 5 + Luna 3 fresh context가 누적 ledger를 이어받음
 - **Automatic collective pivot** — 미시험 coverage claim, 독립 재현 후 follow-up 활성화
 - **Dossier handoff** — 새 peer가 이전 chat 없이 현재 상태를 즉시 복구
 - **한국어 KB 검색** — FTS5 trigram + structured JSONL normalization
@@ -30,8 +30,10 @@ Black Hat 발표). Runtime 규약: `SWARM.md`. 프롬프팅 실험: `PROMPTING-R
 ├── VALIDATION.md
 ├── settings.json
 ├── agents/pentest-peer.md
+├── agents/pentest-peer-luna.md  # same profile body; different model route
 ├── pentest/
 │   ├── swarm.py
+│   ├── postflight.py          # parent-side terminal-result/lease recovery
 │   ├── kb.py
 │   ├── scope.yaml
 │   ├── research/board/      # 187-test historical corpus
@@ -48,7 +50,7 @@ Black Hat 발표). Runtime 규약: `SWARM.md`. 프롬프팅 실험: `PROMPTING-R
 ```bash
 mkdir -p .pi/skills/redteam .pi/agents .pi/pentest
 cp SKILL.md SWARM.md RESEARCH.md PROMPTING-RESEARCH.md VALIDATION.md .pi/skills/redteam/
-cp agents/pentest-peer.md .pi/agents/
+cp agents/pentest-peer.md agents/pentest-peer-luna.md .pi/agents/
 cp -R pentest/. .pi/pentest/
 # settings.json의 override를 .pi/settings.json에 병합
 # provider가 다르면 /subagents-models pentest-peer로 registry ID를 확인해 수정
@@ -62,12 +64,12 @@ cp -R pentest/. .pi/pentest/
    python3 .pi/pentest/swarm.py init
    python3 .pi/pentest/kb.py index
    ```
-3. `/redteam` 또는 `SKILL.md`의 `runs.all` 예시로 동일 peer 5개 동시 실행
-4. Cohort 반복 및 상태/결과:
+3. `/redteam` 또는 `SKILL.md`의 `runs.all` 예시로 Claude 5 + Luna 3을 동일 prompt로 동시 실행
+4. Workflow 완료 후 parent가 postflight와 다음 cohort를 자동 진행:
    ```bash
-   python3 .pi/pentest/swarm.py cohort-end --reason 'timebox'
-   python3 .pi/pentest/swarm.py cohort-start --peers 5
-   python3 .pi/pentest/swarm.py dossier
+   python3 .pi/pentest/postflight.py <workflow-run-dir>/status.json --end-cohort
+   python3 .pi/pentest/swarm.py cohort-start --peers 8
+   python3 .pi/pentest/swarm.py dossier --recent 10 --gap-limit 12
    python3 .pi/pentest/swarm.py coverage --gaps-only
    python3 .pi/pentest/swarm.py saturation
    python3 .pi/pentest/swarm.py report
