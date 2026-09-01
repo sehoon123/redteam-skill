@@ -16,7 +16,7 @@ transactional ledger에서 스스로 workstream을 만들고 claim·handoff·ver
 - **No live bounty** — reward hacking 대신 operator-only evidence metrics
 - **Fresh-context Luna chain** — 3개 slot × 7개 one-lease child, artifact로만 handoff
 - **Rolling replacement** — refusal 작업은 격리하고 같은 모델의 fresh child로 빈 slot 보충
-- **Mandatory proxy** — curl, Python, browser 모두 127.0.0.1:8080; preflight 전 lease 금지
+- **Proxy auto policy** — reachable이면 강제 사용, unavailable이면 경고 후 direct/offline 진행
 - **Site isolation** — scope/DB/evidence/report/KB를 engagement workspace별 분리
 - **Zero-admin bootstrap** — `/redteam <URL>`이 site create/select/init를 자동 처리
 
@@ -40,7 +40,7 @@ Black Hat 발표). Runtime 규약: `SWARM.md`. 프롬프팅 실험: `PROMPTING-R
 ├── agents/pentest-peer-luna.md     # one lease, then exit
 ├── agents/pentest-cohort-selector.md # read-only cohort number, xhigh
 ├── agents/pentest-run-recorder.md  # host-verified terminal recording, xhigh
-├── agents/luna-probe.md            # bounded proxy-required Luna experiment
+├── agents/luna-probe.md            # bounded proxy-auto Luna experiment
 ├── workflows/cohort.js             # canonical launch; cohort 1 Sonnet, 2+ Opus
 ├── pentest/
 │   ├── swarm.py
@@ -117,8 +117,9 @@ Provider ID 확인 방법:
 2. 명시적 평가 요청은 operator의 authorization assertion으로 기록한다. 인가가 불명확한 요청만
    target traffic 전에 한 번 확인한다.
 3. 동시 site 운영은 site별 Pi process를 `PENTEST_ENGAGEMENT=SITE-A pi`로 시작한다.
-4. `${PENTEST_PROXY:-http://127.0.0.1:8080}` proxy를 시작한다. Peer는 전용 `proxy-check`를
-   통과하기 전 lease를 받지 못하며, Python/browser 설정은 `PROXY.md`를 따른다.
+4. `${PENTEST_PROXY:-http://127.0.0.1:8080}` proxy가 reachable이면 peer가 반드시 사용한다.
+   꺼져 있으면 ledger warning 후 direct/offline mode로 계속한다. Strict 모드는
+   `PENTEST_PROXY_POLICY=required`; Python/browser 설정은 `PROXY.md`를 따른다.
 5. `SKILL.md`의 단일 `.pi/skills/redteam/workflows/cohort.js` entrypoint를 실행한다.
    Workflow가 cohort 1은 Sonnet, cohort 2+는 Opus로 자동 선택한다.
 6. Luna를 별도 `runs.all` 장기 loop에 넣지 않는다. Canonical workflow가 3개 Luna slot을

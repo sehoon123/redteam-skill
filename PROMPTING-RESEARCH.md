@@ -208,13 +208,12 @@ Opus가 fresh context로 수행. Opus는 Sonnet이 수집한 파일만 읽으므
 `. .pi/pentest/engagement_env.sh`를 source하고 `$PENTEST_SCRATCH`만 사용한다. 순차 실행은
 `workspace.py use`, 동시 실행은 site별 Pi process의 `PENTEST_ENGAGEMENT`로 선택한다.
 
-### 4.3 Mandatory proxy
+### 4.3 Proxy auto policy
 
-Target traffic은 `${PENTEST_PROXY:-http://127.0.0.1:8080}`을 반드시 사용한다. Peer는
-`join --proxy-required` 후 `. .pi/pentest/proxy_env.sh`와 ledger `proxy-check`를 실행한다.
-Curl뿐 아니라 Python `requests/urllib/httpx/aiohttp`, Playwright, Selenium/CDP에도 explicit
-proxy 설정이 필요하다. 환경변수를 무시하는 library는 `proxy=` 또는 `trust_env=True`를 쓴다.
-Direct fallback은 금지하며 전체 표는 `PROXY.md`에 있다.
+Peer는 기본 `join --proxy-policy auto` 후 ledger `proxy-check`를 실행한다. Reachable이면 curl,
+Python, Playwright/Selenium/CDP 모두 explicit proxy를 사용한다. Connection unavailable이면
+`proxy.unavailable`을 기록하고 direct/offline mode로 진행해 reversing을 막지 않는다. Reachable
+proxy의 CONNECT 거부는 우회하지 않는다. Strict mode와 전체 조건표는 `PROXY.md`.
 
 ### 4.4 Dossier startup 최소화
 
@@ -230,9 +229,13 @@ python3 "$S" inbox --agent "$AGENT" --after "$CURSOR" --collaboration-only --lim
 # 모든 모델 공통
 . .pi/pentest/engagement_env.sh
 OUT="$PENTEST_SCRATCH/$AGENT-$WORK.txt"
-. .pi/pentest/proxy_env.sh
-curl --proxy "$PENTEST_PROXY" --proxy-header "X-Redteam-Agent: $AGENT" \
-  --proxy-header "X-Redteam-Engagement: $PENTEST_ENGAGEMENT_ID" ... > "$OUT" 2>/dev/null
+. .pi/pentest/proxy_env.sh --agent "$AGENT"
+if [ "$PENTEST_NETWORK_MODE" = proxy ]; then
+  curl --proxy "$PENTEST_PROXY" --proxy-header "X-Redteam-Agent: $AGENT" \
+    --proxy-header "X-Redteam-Engagement: $PENTEST_ENGAGEMENT_ID" ... > "$OUT" 2>/dev/null
+else
+  curl --connect-timeout 10 --max-time 30 ... > "$OUT" 2>/dev/null
+fi
 python3 "$S" artifact-add --agent "$AGENT" --path "$OUT" --work "$WORK"
 ```
 

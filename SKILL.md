@@ -33,7 +33,7 @@ OpenAI–Hugging Face 사건에서 실제 성과를 만든 패턴만 안전하�
 
 - 선택된 engagement workspace의 `scope.yaml`에 명시적 authorization과 target
 - 네트워크 allowlist/격리, rate limit, kill switch
-- 필수 intercepting proxy (`${PENTEST_PROXY:-http://127.0.0.1:8080}`); direct target egress 금지
+- optional intercepting proxy (`${PENTEST_PROXY:-http://127.0.0.1:8080}`); reachable하면 반드시 사용
 
 `swarm.py`는 scope 파일 hash를 engagement에 고정한다. 실행 중 scope가 바뀌면
 fail closed. 실제 네트워크 차단은 반드시 infrastructure layer에서 집행한다.
@@ -103,22 +103,22 @@ site-local scratch/report 경로를 사용한다. Selection이 없으면 기존 
 concurrent equal-authority slots. Luna fresh replacements may create more than eight joined actor
 records. A changed scope requires a new `engagement_id`; old work cannot silently cross engagements.
 
-## Mandatory proxy contract
+## Proxy auto contract
 
-모든 target traffic은 `${PENTEST_PROXY:-http://127.0.0.1:8080}`을 통과해야 한다. Optional
-fallback이 아니다. `join`의 안전한 기본값은 proxy-required이며 peer는 이를 명시한 뒤 다음 순서를 지킨다:
+기본 `PENTEST_PROXY_POLICY=auto`다. Peer는 `next` 전에 `proxy-check`를 실행한다:
 
 ```bash
-. .pi/pentest/proxy_env.sh
+. .pi/pentest/proxy_env.sh --agent "$AGENT"
 python3 .pi/pentest/swarm.py proxy-check --agent "$AGENT" \
   --proxy "$PENTEST_PROXY" --timeout 5
+. .pi/pentest/proxy_env.sh --agent "$AGENT"
 ```
 
-Ledger는 `proxy.checked`가 없으면 `next`에서 lease를 주지 않는다. 이후에도 매 새 shell에서
-`proxy_env.sh`를 source한다. Curl은 `--proxy`, Python은 `requests.proxies`/`ProxyHandler`/
-`httpx proxy=`/`aiohttp trust_env=True`, browser는 `--proxy-server`를 명시한다. 자세한 도구별
-예시는 `PROXY.md`. Proxy 실패 시 target에 direct 연결하지 말고 checkpoint 후 leave한다.
-완전한 강제는 operator infrastructure가 proxy process 외 direct egress를 차단해야 한다.
+Proxy가 reachable이면 ledger가 `proxy.checked`와 `network_mode=proxy`를 기록하고 모든 curl,
+Python, browser target traffic은 explicit proxy를 사용한다. 연결 자체가 unavailable이면
+`proxy.unavailable` warning을 기록하고 `network_mode=direct`로 lease를 계속하므로 reversing/offline
+work가 막히지 않는다. Proxy가 연결을 받은 뒤 CONNECT를 거부하면 우회하지 않고 중단한다.
+Strict 운영은 `PENTEST_PROXY_POLICY=required`; 자세한 조건부 도구 설정은 `PROXY.md`.
 
 ## Canonical launch — 이 경로만 사용
 
@@ -371,4 +371,4 @@ Engagement가 유효하려면:
 - `join`은 기본 one-shot이며 Claude만 `--continuous`; ledger가 Luna의 두 번째 lease를 거부함
 - one-shot work는 등록된 work artifact 없이는 ledger가 `done`을 거부함
 - agent-visible refusal은 structured `verdict=blocked,outcome=refusal`로 rolling supervisor와 postflight에 전달됨
-- proxy-required peer는 `proxy.checked` 전 lease를 받을 수 없고 direct fallback 지침이 없음
+- auto-policy peer는 `proxy.checked` 또는 `proxy.unavailable` 결정 전 lease를 받을 수 없음

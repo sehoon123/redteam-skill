@@ -1,67 +1,93 @@
-# Mandatory Target Proxy
+# Proxy Auto Policy
 
-All target-facing traffic must traverse `${PENTEST_PROXY:-http://127.0.0.1:8080}`. There is no
-direct fallback. If proxy preflight fails, do not contact the target; checkpoint and leave.
+Proxy mode is fail-open by default so offline analysis and reverse engineering are never blocked:
 
-## Required startup
+- Proxy reachable: record `proxy.checked`; all target traffic must use it.
+- Proxy connection unavailable: record `proxy.unavailable`, print a warning, and continue in
+  `direct` mode.
+- Proxy accepts the connection but rejects CONNECT: record `proxy.rejected` and stop. A reachable
+  proxy must not be bypassed.
+
+The default endpoint is `${PENTEST_PROXY:-http://127.0.0.1:8080}`.
+
+## Startup
 
 ```bash
 . .pi/pentest/engagement_env.sh
-. .pi/pentest/proxy_env.sh
+JOIN=$(python3 .pi/pentest/swarm.py join --label "$LABEL" \
+  --proxy-policy "${PENTEST_PROXY_POLICY:-auto}")
+# Extract AGENT from JOIN, then:
+. .pi/pentest/proxy_env.sh --agent "$AGENT"
 python3 .pi/pentest/swarm.py proxy-check --agent "$AGENT" \
   --proxy "$PENTEST_PROXY" --timeout 5
+. .pi/pentest/proxy_env.sh --agent "$AGENT"
 ```
 
-`join` is proxy-required by default (`--proxy-required` is kept explicit in peer profiles). `next`
-refuses a lease until the dedicated `proxy-check` command has
-successfully opened a scoped CONNECT tunnel and recorded `proxy.checked`. Generic `emit` cannot
-forge this event.
+`next` waits for a trusted decision: `proxy.checked` and auto-policy `proxy.unavailable` allow work;
+latest `proxy.rejected` blocks it. Generic `emit` cannot forge these events. Source `engagement_env.sh` and `proxy_env.sh --agent "$AGENT"` in every new shell;
+the latter restores `PENTEST_NETWORK_MODE` from the ledger and configures or unsets proxy variables.
 
-Source both `engagement_env.sh` and `proxy_env.sh` in every new shell tool call; shell environments
-do not persist between calls.
+Strict fail-closed behavior remains available:
+
+```bash
+PENTEST_PROXY_POLICY=required pi
+# or join --proxy-policy required
+```
+
+`--proxy-policy off` skips preflight entirely and is intended only for explicitly offline workflows.
 
 ## Tool settings
+
+Always branch on `PENTEST_NETWORK_MODE`. Use finite timeouts in both modes.
 
 ### curl
 
 ```bash
 . .pi/pentest/engagement_env.sh
-. .pi/pentest/proxy_env.sh
-curl --proxy "$PENTEST_PROXY" \
-  --proxy-header "X-Redteam-Agent: $AGENT" \
-  --proxy-header "X-Redteam-Engagement: $PENTEST_ENGAGEMENT_ID" \
-  --connect-timeout 10 --max-time 30 https://ginandjuice.shop/
+. .pi/pentest/proxy_env.sh --agent "$AGENT"
+if [ "$PENTEST_NETWORK_MODE" = proxy ]; then
+  curl --proxy "$PENTEST_PROXY" \
+    --proxy-header "X-Redteam-Agent: $AGENT" \
+    --proxy-header "X-Redteam-Engagement: $PENTEST_ENGAGEMENT_ID" \
+    --connect-timeout 10 --max-time 30 "$URL"
+else
+  curl --connect-timeout 10 --max-time 30 "$URL"
+fi
 ```
 
 ### Python requests
 
 ```python
 import os, requests
-proxy = os.environ.get("PENTEST_PROXY", "http://127.0.0.1:8080")
-with requests.Session() as session:
-    session.proxies.update({"http": proxy, "https": proxy})
-    response = session.get("https://ginandjuice.shop/", timeout=30)
+kwargs = {"timeout": 30}
+if os.environ["PENTEST_NETWORK_MODE"] == "proxy":
+    proxy = os.environ["PENTEST_PROXY"]
+    kwargs["proxies"] = {"http": proxy, "https": proxy}
+response = requests.get(url, **kwargs)
 ```
 
 ### Python standard library
 
 ```python
 import os, urllib.request
-proxy = os.environ.get("PENTEST_PROXY", "http://127.0.0.1:8080")
-opener = urllib.request.build_opener(
-    urllib.request.ProxyHandler({"http": proxy, "https": proxy})
-)
-response = opener.open("https://ginandjuice.shop/", timeout=30)
+handlers = []
+if os.environ["PENTEST_NETWORK_MODE"] == "proxy":
+    proxy = os.environ["PENTEST_PROXY"]
+    handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+else:
+    handlers.append(urllib.request.ProxyHandler({}))
+response = urllib.request.build_opener(*handlers).open(url, timeout=30)
 ```
 
 ### httpx / aiohttp
 
 ```python
-# httpx
+# proxy is None in direct mode
+proxy = os.environ.get("PENTEST_PROXY") if os.environ["PENTEST_NETWORK_MODE"] == "proxy" else None
 with httpx.Client(proxy=proxy, timeout=30) as client:
     response = client.get(url)
 
-# aiohttp: environment variables are ignored unless trust_env=True
+# proxy_env.sh sets or unsets standard proxy variables
 async with aiohttp.ClientSession(trust_env=True) as session:
     async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
         ...
@@ -70,21 +96,21 @@ async with aiohttp.ClientSession(trust_env=True) as session:
 ### Playwright / Chromium / Selenium
 
 ```python
-browser = await playwright.chromium.launch(proxy={"server": proxy})
-# Raw Chromium/CDP: chromium --proxy-server="$PENTEST_PROXY" ...
-# Selenium ChromeOptions: options.add_argument(f"--proxy-server={proxy}")
+launch = ({"proxy": {"server": os.environ["PENTEST_PROXY"]}}
+          if os.environ["PENTEST_NETWORK_MODE"] == "proxy" else {})
+browser = await playwright.chromium.launch(**launch)
+# Add --proxy-server only in proxy mode for raw Chromium/CDP or Selenium.
 ```
 
 ### Other tools
 
-- `wget`: set both lowercase proxy environment variables or pass its explicit proxy options.
-- Node built-in `fetch`: environment variables may be ignored; configure an explicit proxy dispatcher.
-- Custom sockets, raw TLS, DNS clients, and libraries without proxy support are forbidden for target
-  traffic unless operator infrastructure independently blocks direct egress.
+- `wget`: standard proxy variables are set only in proxy mode.
+- Node built-in `fetch`: configure an explicit dispatcher only in proxy mode.
+- Custom sockets, raw TLS, DNS clients, and offline reversing tools may run directly when the ledger
+  mode is `direct`.
 
 ## Evidence
 
-The CONNECT preflight carries both `X-Redteam-Agent` and `X-Redteam-Engagement`; the local proxy log
-and ledger `proxy.checked` event establish site-attributed preflight use. They do not prove every
-later library honored proxy settings. Production enforcement therefore also requires infrastructure
-egres rules that permit target traffic only from the proxy process.
+CONNECT preflight carries `X-Redteam-Agent` and `X-Redteam-Engagement`. The ledger preserves both
+successful proxy use and explicit fail-open decisions, but application-level settings cannot prove
+that every library honored the selected mode.

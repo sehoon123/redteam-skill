@@ -117,7 +117,7 @@ the runtime now includes parent-side `postflight.py`, idempotent `run-result` re
 lease recovery, bounded dossier/inbox output, finite tool timeouts, and run-result metrics.
 Refusals are recorded but never retried or rerouted to another model.
 
-## Proxy enforcement validation — 2026-09-01
+## Historical strict proxy validation — 2026-09-01
 
 A temporary stdlib CONNECT proxy bound only to `127.0.0.1:8080` and allowed only
 `ginandjuice.shop:443`. Parent probes confirmed both explicit curl and Python `urllib` requests
@@ -137,15 +137,17 @@ instructions. Observed behavior:
 
 Operational lessons and fixes:
 
-1. “Proxy available” prose was too weak. `join` is now proxy-required by default and `next` refuses a
-   lease until dedicated `proxy-check` records a scoped CONNECT success.
+1. At the time, `join` was proxy-required and `next` refused a lease until dedicated `proxy-check`
+   recorded a scoped CONNECT success. The later operator-requested auto policy keeps this trusted
+   decision gate but accepts an explicit `proxy.unavailable` result.
 2. Curl-only guidance was insufficient. `proxy_env.sh` exports upper/lowercase proxy variables, while
    `PROXY.md` requires explicit settings for requests, urllib, httpx, aiohttp, Playwright, Selenium,
    Chromium/CDP, wget, and Node.
 3. Shell state does not persist between tool calls, so peers must source `proxy_env.sh` in every new
    shell. Libraries that ignore environment proxies must use their own `proxy=` or `trust_env=True`.
-4. Preflight evidence proves the proxy was reachable, not that every later library obeyed it. Real
-   enforcement still requires operator egress rules that block direct target traffic from peers.
+4. Preflight evidence proves the proxy was reachable, not that every later library obeyed it. Strict
+   deployments still require operator egress rules; auto mode deliberately permits direct traffic
+   only after connection-level unavailability is recorded.
 5. Full dossier/startup overhead can consume most of a short operation window. OpenAI/HF-like fresh
    capacity only helps when replacements receive compressed state and enough execution time. Startup
    now uses `dossier --compact --recent 8 --gap-limit 5`; on the live GJ02 ledger this reduced startup
@@ -169,3 +171,11 @@ A URL-only bootstrap test now verifies the normal `/redteam` path: `ensure` deri
 `site-example.test-p443`, creates and selects the scope idempotently, and initializes it without
 manual workspace commands. Switching to another site is refused while a fresh peer is live and
 succeeds after that peer leaves; placeholder authorization is rejected before creation.
+
+## Proxy auto/fail-open validation — 2026-09-01
+
+With an unused localhost port, an auto-policy peer recorded `proxy.unavailable`, resolved
+`network_mode=direct`, sourced `proxy_env.sh` with all standard proxy variables unset, and claimed an
+offline reversing lease. The same unavailable endpoint left a `--proxy-required` peer blocked. The
+existing temporary CONNECT test still records `proxy.checked`, site/agent headers, and proxy mode
+when a listener is reachable. A reachable listener that returns non-200 remains fail-closed.

@@ -68,11 +68,13 @@ class CliTest(unittest.TestCase):
         self.assertEqual(base, extract_invariants(sonnet))
         for profile in (claude, luna, sonnet):
             self.assertIn("--label '<assigned-label>'", profile)
-            self.assertIn("--proxy-required", profile)
+            self.assertIn("--proxy-policy", profile)
+            self.assertIn("PENTEST_PROXY_POLICY", profile)
+            self.assertIn("PENTEST_NETWORK_MODE", profile)
             self.assertIn("engagement_env.sh", profile)
             self.assertIn("PENTEST_SCRATCH", profile)
             self.assertIn("proxy-check", profile)
-            self.assertIn("Python must use explicit", profile)
+            self.assertIn("When `PENTEST_NETWORK_MODE=proxy`", profile)
             self.assertNotIn("--label peer-N", profile)
 
     def test_all_agent_profiles_use_xhigh_or_max(self):
@@ -80,11 +82,11 @@ class CliTest(unittest.TestCase):
             text = path.read_text()
             self.assertTrue("thinking: xhigh" in text or "thinking: max" in text, path.name)
 
-    def test_luna_probe_also_forbids_direct_traffic(self):
+    def test_luna_probe_prefers_proxy_but_allows_direct_mode(self):
         probe = (ROOT / "agents" / "luna-probe.md").read_text()
         self.assertIn("PENTEST_PROXY", probe)
-        self.assertIn("no direct fallback", probe)
-        self.assertIn("Python must use", probe)
+        self.assertIn("PENTEST_NETWORK_MODE=proxy", probe)
+        self.assertIn("continue without proxy settings", probe)
 
     def test_luna_profile_is_one_lease_only(self):
         luna = (ROOT / "agents" / "pentest-peer-luna.md").read_text()
@@ -99,13 +101,14 @@ class CliTest(unittest.TestCase):
         self.assertNotIn("--continuous", luna)
         self.assertEqual(1, luna.count('swarm.py next --agent "$AGENT"'))
 
-    def test_proxy_required_agent_cannot_claim_before_scoped_connect(self):
+    def test_proxy_auto_agent_cannot_claim_before_scoped_decision(self):
         creator = self.join("creator")
         joined = self.run_swarm(
             "join", "--label", "proxied-peer", "--continuous",
         )
         agent = joined["agent"]
         self.assertTrue(joined["proxy_required"])
+        self.assertEqual("auto", joined["proxy_policy"])
         self.run_swarm(
             "task-add", "--agent", creator, "--key", "proxied-work",
             "--kind", "hypothesis", "--title", "proxied work",
@@ -152,6 +155,115 @@ class CliTest(unittest.TestCase):
             "next", "--agent", agent, "--wait", 0, "--quiet", 999,
         )
         self.assertEqual("proxied-work", claimed["key"])
+
+    def test_proxy_auto_fails_open_but_required_policy_stays_closed(self):
+        creator = self.join("creator")
+        automatic = self.run_swarm("join", "--label", "auto-direct", "--continuous")
+        auto_agent = automatic["agent"]
+        self.assertEqual("auto", automatic["proxy_policy"])
+        self.assertEqual("proxy-required", self.run_swarm(
+            "next", "--agent", auto_agent, "--wait", 0, "--quiet", 999,
+        )["status"])
+
+        unused = socket.socket()
+        unused.bind(("127.0.0.1", 0))
+        port = unused.getsockname()[1]
+        unused.close()
+        no_ledger = subprocess.run(
+            ["sh", "-c", '. "$1"; printf "%s|%s" "$PENTEST_NETWORK_MODE" "${HTTPS_PROXY-unset}"',
+             "sh", str(ROOT / "pentest" / "proxy_env.sh")],
+            cwd=ROOT, env={**self.env, "PENTEST_PROXY": f"http://127.0.0.1:{port}"},
+            text=True, capture_output=True,
+        )
+        self.assertEqual(0, no_ledger.returncode, no_ledger.stderr)
+        self.assertEqual("direct|unset", no_ledger.stdout)
+        decision = self.run_swarm(
+            "proxy-check", "--agent", auto_agent,
+            "--proxy", f"http://127.0.0.1:{port}", "--timeout", .2,
+        )
+        self.assertEqual("unavailable", decision["status"])
+        self.assertEqual("direct", decision["network_mode"])
+        self.assertEqual("direct", self.run_swarm(
+            "proxy-mode", "--agent", auto_agent,
+        )["network_mode"])
+        shell_env = {
+            **self.env, "PENTEST_SWARM": str(SWARM),
+            "HTTP_PROXY": "http://should-be-unset", "HTTPS_PROXY": "http://should-be-unset",
+        }
+        sourced = subprocess.run(
+            ["sh", "-c", '. "$1" --agent "$2"; printf "%s|%s" "$PENTEST_NETWORK_MODE" "${HTTP_PROXY-unset}"',
+             "sh", str(ROOT / "pentest" / "proxy_env.sh"), auto_agent],
+            cwd=ROOT, env=shell_env, text=True, capture_output=True,
+        )
+        self.assertEqual(0, sourced.returncode, sourced.stderr)
+        self.assertEqual("direct|unset", sourced.stdout)
+        self.assertIn("continuing in direct/offline mode", sourced.stderr)
+        self.run_swarm(
+            "task-add", "--agent", creator, "--key", "offline-reversing",
+            "--kind", "analysis", "--title", "Reverse local binary",
+        )
+        claimed = self.run_swarm(
+            "next", "--agent", auto_agent, "--wait", 0, "--quiet", 999,
+        )
+        self.assertEqual("offline-reversing", claimed["key"])
+        self.run_swarm(
+            "done", "--agent", auto_agent, "--work", claimed["id"],
+            "--summary", "offline analysis complete",
+        )
+
+        rejecting = socket.socket()
+        rejecting.bind(("127.0.0.1", 0))
+        rejecting.listen(1)
+        reject_port = rejecting.getsockname()[1]
+
+        def reject_once():
+            conn, _ = rejecting.accept()
+            with conn:
+                request = b""
+                while b"\r\n\r\n" not in request:
+                    request += conn.recv(2048)
+                conn.sendall(b"HTTP/1.1 403 Proxy policy denied\r\n\r\n")
+            rejecting.close()
+
+        reject_thread = threading.Thread(target=reject_once, daemon=True)
+        reject_thread.start()
+        rejected = self.run_swarm(
+            "proxy-check", "--agent", auto_agent,
+            "--proxy", f"http://127.0.0.1:{reject_port}", "--timeout", 1,
+            check=False,
+        )
+        reject_thread.join(2)
+        self.assertIn("required proxy CONNECT failed", rejected.stderr)
+        self.assertEqual("blocked", self.run_swarm(
+            "proxy-mode", "--agent", auto_agent,
+        )["network_mode"])
+        self.assertEqual("proxy-required", self.run_swarm(
+            "next", "--agent", auto_agent, "--wait", 0, "--quiet", 999,
+        )["status"])
+
+        strict = self.run_swarm(
+            "join", "--label", "strict-proxy", "--continuous", "--proxy-required",
+        )
+        failed = self.run_swarm(
+            "proxy-check", "--agent", strict["agent"],
+            "--proxy", f"http://127.0.0.1:{port}", "--timeout", .2, check=False,
+        )
+        self.assertIn("required proxy unavailable", failed.stderr)
+        self.assertEqual("proxy-required", self.run_swarm(
+            "next", "--agent", strict["agent"], "--wait", 0, "--quiet", 999,
+        )["status"])
+
+        off = self.run_swarm(
+            "join", "--label", "offline-only", "--continuous", "--proxy-policy", "off",
+        )
+        disabled = self.run_swarm(
+            "proxy-check", "--agent", off["agent"],
+            "--proxy", f"http://127.0.0.1:{port}", "--timeout", .2,
+        )
+        self.assertEqual("disabled", disabled["status"])
+        self.assertEqual("direct", self.run_swarm(
+            "proxy-mode", "--agent", off["agent"],
+        )["network_mode"])
 
     def test_one_shot_agent_cannot_claim_a_second_lease(self):
         creator = self.join("creator")
@@ -304,7 +416,9 @@ class CliTest(unittest.TestCase):
         self.assertIn("Python requests", proxy_doc)
         self.assertIn("aiohttp", proxy_doc)
         self.assertIn("Playwright", proxy_doc)
-        self.assertIn("HTTPS_PROXY", proxy_env)
+        self.assertIn("fail-open by default", proxy_doc)
+        self.assertIn("PENTEST_NETWORK_MODE", proxy_env)
+        self.assertIn("unset HTTP_PROXY", proxy_env)
         self.assertIn("globalConcurrencyLimit: 8", skill)
         self.assertIn("maxSubagentSpawnsPerRun: 63", skill)
         self.assertNotIn("workflows/cohort-sonnet.js", skill)
@@ -806,9 +920,14 @@ class CliTest(unittest.TestCase):
         conn.execute("PRAGMA foreign_keys=OFF")
         conn.execute("DROP TABLE cohort_agents")
         conn.execute("DROP TABLE cohorts")
+        conn.execute("ALTER TABLE agents DROP COLUMN proxy_fail_open")
         conn.commit()
         conn.close()
         dossier = self.run_swarm("dossier")
+        migrated = sqlite3.connect(self.db())
+        columns = {row[1] for row in migrated.execute("PRAGMA table_info(agents)")}
+        migrated.close()
+        self.assertIn("proxy_fail_open", columns)
         self.assertEqual(1, dossier["active_cohort"]["number"])
         self.assertEqual(1, dossier["active_cohort"]["joined_peers"])
         self.assertEqual("wait", self.run_swarm(

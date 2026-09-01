@@ -114,9 +114,12 @@ join → bounded dossier/inbox → atomic next()
 leave(summary)
 ```
 
-`join`은 기본 proxy-required다. Peer는 전용 `proxy-check`가 scoped CONNECT를 성공해 `proxy.checked`를 남기기
-전에는 `next`가 work를 주지 않는다. Generic event로 이 상태를 위조할 수 없다. 모든 실제
-curl/Python/browser target request도 `PROXY.md`의 explicit proxy 설정을 사용한다.
+`join`은 기본 `proxy-policy=auto`다. `proxy-check`가 reachable proxy에 scoped CONNECT를 성공하면
+`proxy.checked`와 proxy mode를, proxy connection이 unavailable이면 `proxy.unavailable`과 direct
+mode warning을 남긴다. Reachable proxy의 CONNECT 거부는 `proxy.rejected`로 기록한다. `next`는
+latest trusted decision이 허용하기 전 work를 주지 않으며 generic event로 위조할 수
+없다. Reachable proxy는 모든 target request에 명시적으로 사용하고 unavailable이면 reversing/offline
+또는 direct work를 계속한다. Strict fail-closed는 `PENTEST_PROXY_POLICY=required`.
 
 `join`은 기본 one-shot이다. Claude profile만 `--continuous`를 명시해 atomic unit을
 quiescence/timebox까지 반복한다. Luna profile은 `--one-shot`으로 등록되어 ledger가 두 번째
@@ -155,7 +158,7 @@ METR 보고서에서 PHASEONE[big]도 전체 assignment 중 약 10%만 보냈다
 
 - `init`은 concurrent slot target 8인 첫 cohort를 시작; Luna fresh replacements 때문에 joined actor 수는 8보다 클 수 있음
 - 정상 종료: `leave --summary`가 unresolved leads와 artifact reference를 남기고 lease release
-- `proxy.checked` 없는 proxy-required agent는 lease claim 불가; proxy 실패 시 direct fallback 금지
+- auto agent는 `proxy.checked`/`proxy.unavailable` 결정 전 lease claim 불가; 선택 mode는 ledger에 보존
 - child terminal failure는 rolling supervisor가 즉시 `run-result`로 기록한 뒤 slot을 보충
 - agent-visible refusal은 `task.blocked` + `leave --refusal`; flag가 빠져도 blocked event가 lease를 원자적으로 `failed` 처리
 - abrupt provider refusal은 recorder의 host-verified gate가 leased work를 `failed` 처리한 뒤 replacement 시작
