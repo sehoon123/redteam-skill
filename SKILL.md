@@ -69,15 +69,32 @@ Runtime code와 site data는 분리된다:
 
 선택·병렬 실행·legacy 규칙은 `WORKSPACES.md`.
 
-## Initialize
+## Automatic `/redteam <target>` bootstrap — 반드시 먼저 실행
+
+Target URL/hostname이 포함된 일반 `/redteam` 요청에서는 operator에게 workspace 이름,
+scope 파일, `create`, `use`, `init` 명령을 요구하지 않는다.
+
+1. `/redteam "https://example.com"에 대한 모의해킹을 진행해줘`처럼 target 평가를 명시적으로
+   요청한 문장은 해당 target에 대한 operator의 authorization assertion으로 취급한다. 단순 URL 질문,
+   무작위 제3자 탐색, 또는 authorization이 불명확하다고 사용자가 말한 경우에는 network traffic 전에
+   인가 여부를 한 번 확인한다.
+2. 확인된 target을 그대로 인자로 전달해 다음을 실행한다. Shell 문자열 결합으로 scope를 만들지 않는다.
 
 ```bash
-python3 .pi/pentest/workspace.py create --id SITE-A --scope scopes/site-a.yaml
-python3 .pi/pentest/workspace.py use --id SITE-A
+python3 .pi/pentest/workspace.py ensure \
+  --target "$TARGET" \
+  --authorization "Operator explicitly requested and asserted authorization for this target in the current /redteam invocation."
 python3 .pi/pentest/swarm.py init
 python3 .pi/pentest/kb.py index
 ```
 
+`ensure`가 host/port 기반 stable ID를 만들고 site workspace 생성 또는 재사용, scope 생성, 선택까지
+처리한다. Scope와 selection pointer는 각각 atomic replace한다. 동일 target 재호출은 기존 site를 resume한다. 현재 site에 live peer가 있으면
+pointer를 바꾸지 않고 fail closed하므로, 그때만 별도 Pi process를
+`PENTEST_ENGAGEMENT=<reported-id> pi`로 시작하라고 안내한다. Bootstrap 성공 뒤 canonical workflow를
+실행한다.
+
+수동 scope가 필요한 복잡한 allowlist/credentials assessment만 `create --id ... --scope ...`를 쓴다.
 여러 site를 동시에 실행하면 global pointer를 바꾸지 말고 site별 Pi process를
 `PENTEST_ENGAGEMENT=SITE-A pi`처럼 시작한다. Peer는 `engagement_env.sh`를 source해
 site-local scratch/report 경로를 사용한다. Selection이 없으면 기존 single-site layout을 그대로 쓴다.

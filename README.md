@@ -18,6 +18,7 @@ transactional ledger에서 스스로 workstream을 만들고 claim·handoff·ver
 - **Rolling replacement** — refusal 작업은 격리하고 같은 모델의 fresh child로 빈 slot 보충
 - **Mandatory proxy** — curl, Python, browser 모두 127.0.0.1:8080; preflight 전 lease 금지
 - **Site isolation** — scope/DB/evidence/report/KB를 engagement workspace별 분리
+- **Zero-admin bootstrap** — `/redteam <URL>`이 site create/select/init를 자동 처리
 
 설계 근거: `RESEARCH.md` (OpenAI technical report, METR, Hugging Face timeline,
 Black Hat 발표). Runtime 규약: `SWARM.md`. 프롬프팅 실험: `PROMPTING-RESEARCH.md`.
@@ -107,23 +108,24 @@ Provider ID 확인 방법:
 
 ## 사용
 
-1. Site별 scope와 workspace 생성·선택:
-   ```bash
-   python3 .pi/pentest/workspace.py create --id SITE-A --scope scopes/site-a.yaml
-   python3 .pi/pentest/workspace.py use --id SITE-A
-   python3 .pi/pentest/swarm.py init
-   python3 .pi/pentest/kb.py index
+1. 평소처럼 target만 요청한다:
+   ```text
+   /redteam "https://example.com"에 대한 모의해킹을 진행해줘
    ```
-2. 동시 site 운영은 site별 Pi process를 `PENTEST_ENGAGEMENT=SITE-A pi`로 시작한다.
-3. `${PENTEST_PROXY:-http://127.0.0.1:8080}` proxy를 시작한다. Peer는 전용 `proxy-check`를
+   Skill이 `workspace.py ensure`로 host/port 기반 site ID, scope, workspace 선택을 만들거나 재사용하고
+   `swarm.py init`과 `kb.py index`까지 자동 실행한다. 사용자는 `create/use`를 직접 다루지 않는다.
+2. 명시적 평가 요청은 operator의 authorization assertion으로 기록한다. 인가가 불명확한 요청만
+   target traffic 전에 한 번 확인한다.
+3. 동시 site 운영은 site별 Pi process를 `PENTEST_ENGAGEMENT=SITE-A pi`로 시작한다.
+4. `${PENTEST_PROXY:-http://127.0.0.1:8080}` proxy를 시작한다. Peer는 전용 `proxy-check`를
    통과하기 전 lease를 받지 못하며, Python/browser 설정은 `PROXY.md`를 따른다.
-4. `SKILL.md`의 단일 `.pi/skills/redteam/workflows/cohort.js` entrypoint를 실행한다.
+5. `SKILL.md`의 단일 `.pi/skills/redteam/workflows/cohort.js` entrypoint를 실행한다.
    Workflow가 cohort 1은 Sonnet, cohort 2+는 Opus로 자동 선택한다.
-5. Luna를 별도 `runs.all` 장기 loop에 넣지 않는다. Canonical workflow가 3개 Luna slot을
+6. Luna를 별도 `runs.all` 장기 loop에 넣지 않는다. Canonical workflow가 3개 Luna slot을
    fresh one-shot child로 교체한다. `join`은 기본 one-shot이고 Claude만 `--continuous`를
    사용한다. Ledger는 Luna의 두 번째 lease와 artifact 없는 `done`을 거부한다. Terminal child는
    같은 profile의 fresh generation으로 보충되지만 refusal work 자체는 `failed`로 격리된다.
-6. Workflow 완료 후 parent가 postflight와 다음 cohort를 자동 진행:
+7. Workflow 완료 후 parent가 postflight와 다음 cohort를 자동 진행:
    ```bash
    python3 .pi/pentest/postflight.py <workflow-run-dir>/status.json --end-cohort
    python3 .pi/pentest/swarm.py cohort-start --peers 8

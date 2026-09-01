@@ -294,6 +294,8 @@ class CliTest(unittest.TestCase):
         self.assertIn("workflows/cohort.js", skill)
         self.assertIn("PROXY.md", skill)
         self.assertIn("WORKSPACES.md", skill)
+        self.assertIn("workspace.py ensure", skill)
+        self.assertIn("사용자는 `create/use`를 직접 다루지 않는다", (ROOT / "README.md").read_text())
         workspace_doc = (ROOT / "WORKSPACES.md").read_text()
         self.assertIn("PENTEST_ENGAGEMENT", workspace_doc)
         self.assertIn("engagements/SITE-A", workspace_doc)
@@ -328,6 +330,60 @@ class CliTest(unittest.TestCase):
         self.assertEqual(120, len(set(seqs)))
         conn = sqlite3.connect(self.db())
         self.assertEqual(120, conn.execute("SELECT COUNT(*) FROM events WHERE kind='intel'").fetchone()[0])
+
+    def test_redteam_target_bootstrap_is_automatic_idempotent_and_live_safe(self):
+        runtime = self.home / "automatic-runtime"
+        runtime.mkdir()
+        env = {**os.environ, "PENTEST_RUNTIME_ROOT": str(runtime)}
+        env.pop("PENTEST_HOME", None)
+        command = [
+            "python3", str(WORKSPACE), "ensure", "--target", "https://Example.Test/shop",
+            "--authorization", "Operator explicitly authorized this unit-test assessment.",
+        ]
+        first = subprocess.run(command, env=env, text=True, capture_output=True)
+        self.assertEqual(0, first.returncode, first.stderr)
+        created = json.loads(first.stdout)
+        self.assertEqual("site-example.test-p443", created["engagement"])
+        self.assertTrue(created["created"])
+        self.assertEqual("site-example.test-p443\n", (runtime / "active-engagement").read_text())
+        scope_text = Path(created["scope"]).read_text()
+        self.assertIn('host: "example.test"', scope_text)
+        self.assertIn("ports: [443]", scope_text)
+
+        repeated = json.loads(subprocess.check_output(command, env=env, text=True))
+        self.assertFalse(repeated["created"])
+        initialized = subprocess.run(
+            ["python3", str(SWARM), "init"], env=env, text=True, capture_output=True,
+        )
+        self.assertEqual(0, initialized.returncode, initialized.stderr)
+        agent = json.loads(subprocess.check_output(
+            ["python3", str(SWARM), "join", "--label", "live-bootstrap-test",
+             "--continuous", "--no-proxy-required"], env=env, text=True,
+        ))["agent"]
+
+        other = [
+            "python3", str(WORKSPACE), "ensure", "--target", "https://other.test",
+            "--authorization", "Operator explicitly authorized this unit-test assessment.",
+        ]
+        blocked = subprocess.run(other, env=env, text=True, capture_output=True)
+        self.assertNotEqual(0, blocked.returncode)
+        self.assertIn("live peers", blocked.stderr)
+        self.assertEqual("site-example.test-p443\n", (runtime / "active-engagement").read_text())
+
+        left = subprocess.run(
+            ["python3", str(SWARM), "leave", "--agent", agent],
+            env=env, text=True, capture_output=True,
+        )
+        self.assertEqual(0, left.returncode, left.stderr)
+        switched = subprocess.run(other, env=env, text=True, capture_output=True)
+        self.assertEqual(0, switched.returncode, switched.stderr)
+        self.assertEqual("site-other.test-p443\n", (runtime / "active-engagement").read_text())
+
+        pending = subprocess.run(
+            ["python3", str(WORKSPACE), "ensure", "--target", "https://third.test",
+             "--authorization", "pending"], env=env, text=True, capture_output=True,
+        )
+        self.assertNotEqual(0, pending.returncode)
 
     def test_multi_site_workspaces_isolate_scope_state_evidence_and_reports(self):
         runtime = self.home / "runtime"

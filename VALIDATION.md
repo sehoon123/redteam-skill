@@ -164,3 +164,8 @@ own SQLite ledger and FTS database; identically named scratch files retained dif
 `report` wrote to distinct findings directories. The atomic active pointer selected SITE-A, while a
 process-local `PENTEST_ENGAGEMENT=SITE-B` override resolved SITE-B without changing the pointer.
 Legacy `PENTEST_HOME` tests continue to pass.
+
+A URL-only bootstrap test now verifies the normal `/redteam` path: `ensure` derives
+`site-example.test-p443`, creates and selects the scope idempotently, and initializes it without
+manual workspace commands. Switching to another site is refused while a fresh peer is live and
+succeeds after that peer leaves; placeholder authorization is rejected before creation.

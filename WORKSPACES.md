@@ -15,9 +15,23 @@ scope, SQLite state, evidence, reports, exports, memory, and cache are isolated:
 └── research/board/        # shared read-only operational research
 ```
 
-## Create and select
+## Normal `/redteam` use
 
-The workspace ID must exactly equal `engagement_id` in its scope file.
+Users do not create or select a workspace manually. A target-bearing request such as:
+
+```text
+/redteam "https://example.com"에 대한 모의해킹을 진행해줘
+```
+
+makes the skill run `workspace.py ensure`, `swarm.py init`, and `kb.py index` before launching peers.
+`ensure` derives a stable `site-<host>-p<port>` ID, creates or reuses the site scope/workspace, and
+selects it. An explicit assessment request is recorded as the operator's authorization assertion;
+ambiguous authorization is confirmed before target traffic.
+
+## Manual create and select
+
+Use this only for a complex hand-written scope. The workspace ID must exactly equal `engagement_id`
+in its scope file.
 
 ```bash
 python3 .pi/pentest/workspace.py create \
@@ -31,8 +45,9 @@ python3 .pi/pentest/workspace.py list
 python3 .pi/pentest/swarm.py init
 ```
 
-The atomic `active-engagement` pointer is for sequential operation. Do not switch it while a workflow
-or peer is live. The canonical workflow and postflight resolve the same pointer.
+The atomic `active-engagement` pointer is for sequential operation. `ensure`/`use` refuse to switch
+away from a workspace with a fresh live peer or lease. The canonical workflow and postflight resolve
+the same pointer.
 
 ## Simultaneous sites
 
