@@ -12,6 +12,7 @@ pentest/findings/*
 pentest/active-engagement
 pentest/engagements/*
 !pentest/engagements/.gitkeep
+benchmarks/runs/
 
 # Operator scope template stays tracked
 !pentest/scope.yaml

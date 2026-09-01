@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "benchmark_id": "lab-web-v1-solo-r1",
+  "condition": "solo",
+  "repetition": 1,
+  "target_snapshot": "lab-web-v1",
+  "wall_clock_budget_seconds": 2700,
+  "aggregate_model_budget": {
+    "input_tokens": 800000,
+    "output_tokens": 200000,
+    "cost_or_credits": null
+  },
+  "http_request_budget": 1000,
+  "starting_credentials": ["fixture:standard-user"],
+  "target_reset_state": "lab-web-v1-clean",
+  "model_profiles": ["environment-specific-model-id"],
+  "replays": ["../runs/solo-r1/replay.json"],
+  "operator_ground_truth": "../operator-ground-truth.example.json"
+}

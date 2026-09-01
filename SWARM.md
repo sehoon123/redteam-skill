@@ -79,10 +79,10 @@ ready ──atomic claim──> leased ──done──> done
 - `(engagement_id, work_key)` unique + structural fingerprint: 같은 task만 재사용하고 충돌은 rollback
 - `BEGIN IMMEDIATE`: 동시에 claim해도 winner는 한 명
 - durable claim generation: 반복 `next`는 새 lease 대신 기존 `active-lease`를 반환
-- lease + heartbeat: 죽은 peer의 작업이 영구 lock되지 않음
+- strict lease + heartbeat: expiry 전에만 renew; 만료 owner는 `claim-expired`, 다른 peer가 즉시 takeover
 - `forbidden_actor`: finder가 자기 verification work를 claim하지 못함
 - optional parent: prerequisite work가 done일 때만 ready
-- workstream/diversity/information-gain/cost/revisit metadata는 replay에서 다음 scheduler를 평가
+- workstream/diversity/information-gain/cost/revisit metadata는 decision-time replay policy를 평가
 - `caused_by_event`: event→work→claim→assertion의 provenance를 보존
 
 ### Finding
@@ -120,6 +120,8 @@ join → minimal status/proxy decision → atomic next(--brief)
     execute within scope
     immediately checkpoint artifact/hash + attempt/finding/typed assertion
     done, fail, or attest; never silently abandon
+  if claim-expired:
+    never mutate the old generation; continuous peer may call next for a new claim
   if wait:
     inspect compact global dossier, then optionally propose one typed hypothesis/request
 leave(summary)
@@ -145,11 +147,18 @@ negative attempts, artifact associations, finding/attestation, referenced creden
 단순 recent window로 unrelated stream을 섞지 않으며 큰 core value는 hash-addressed ref로 대체한다.
 Causal source에서 생성된 work는 artifact, linked attempt, 또는 typed assertion 없이 `done`할 수 없다.
 
-`replay-export --strict`는 events/work/workstreams/evidence projection을 canonical JSON으로 export한다.
-같은 snapshot은 byte-identical하고 `replay.py`가 causal ordering, typed ancestry, evidence/work refs를
-검증한다. Relational tables가 계속 authoritative이며 replay는 secret/target state 복원을 주장하지 않는다.
-`communication-metrics`는 aggregate actionability, consumption latency, unlock, duplicate, herding,
-challenge resolution만 operator에게 제공하며 peer leaderboard를 만들지 않는다.
+`next`의 새 claim transaction은 `scheduler_decisions`와 complete ready/leased candidate snapshot을
+먼저 기록하고 계속 `fifo-v1`로 선택한다. 각 candidate는 eligibility/exclusion reason, age, priority,
+gain/cost, generation, verification urgency, stream/diversity concentration, parent depth를 가진다.
+
+`replay-export --strict`는 events/work/claims/evidence/scheduler projection을 canonical JSON으로
+export한다. 같은 snapshot은 byte-identical하고 `replay.py`가 causal ordering, typed ancestry,
+evidence/work refs, candidate hash와 decision↔claim을 검증한다. `verify-first-v1`,
+`gain-per-cost-v1`, `diversity-aware-v1`은 historical candidate만 ranking하며 outcome을 추정하지 않는다.
+Relational tables가 계속 authoritative이며 replay는 secret/target state 복원을 주장하지 않는다.
+`communication-metrics`는 aggregate actionability, consumption latency, unlock, duplicate,
+`dominant_workstream_share`, true `workstream_hhi`, challenge resolution만 operator에게 제공하며 peer
+leaderboard를 만들지 않는다. Controlled A/B/C 집계는 `SWARMBENCH.md`를 따른다.
 
 ## Emergent coordinator
 
@@ -184,6 +193,7 @@ METR 보고서에서 PHASEONE[big]도 전체 assignment 중 약 10%만 보냈다
 - 정상 종료: `leave --summary`가 unresolved leads와 artifact reference를 남기고 lease release
 - auto agent는 `proxy.checked`/`proxy.unavailable` 결정 전 lease claim 불가; 선택 mode는 ledger에 보존
 - child terminal failure는 rolling supervisor가 즉시 `run-result`로 기록한 뒤 slot을 보충
+- run-result usage/timing은 provider가 준 값만 nullable column에 저장하며 누락값을 추정하지 않음
 - agent-visible refusal은 `task.blocked` + `leave --refusal`; flag가 빠져도 blocked event가 lease를 원자적으로 `failed` 처리
 - abrupt provider refusal은 recorder의 host-verified gate가 leased work를 `failed` 처리한 뒤 replacement 시작
 - replacement는 refused work가 아니라 다른 ready work를 claim
@@ -230,7 +240,8 @@ saturation과 무관하게 허용된다. Report/export는 어느 시점에도 �
 - append-only attempt 수
 - registered surface×check coverage ratio
 - completed/refusal/budget/timeout/interrupted/provider-error run-result 수
-- typed/actionable event ratio, consumption/challenge latency, unlock/duplicate/herding aggregate
+- typed/actionable event ratio, consumption/challenge latency, unlock/duplicate aggregate
+- dominant workstream share와 true HHI, claim expiry/abandonment lifecycle
 
 Peer에게 점수·순위·multiplier를 보여주지 않는다. Event spam, severity self-claim,
 `serendipity` 반복으로 accepted finding 수가 바뀌지 않는다.

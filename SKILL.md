@@ -44,8 +44,10 @@ fail closed. 실제 네트워크 차단은 반드시 infrastructure layer에서 
 
 ```bash
 mkdir -p .pi/skills/redteam/workflows .pi/agents .pi/pentest
-cp SKILL.md SWARM.md RESEARCH.md PROMPTING-RESEARCH.md PROXY.md WORKSPACES.md CAUSAL-PROTOCOL.md VALIDATION.md .pi/skills/redteam/
+cp SKILL.md SWARM.md RESEARCH.md PROMPTING-RESEARCH.md PROXY.md WORKSPACES.md \
+  CAUSAL-PROTOCOL.md SWARMBENCH.md VALIDATION.md .pi/skills/redteam/
 cp workflows/cohort.js .pi/skills/redteam/workflows/
+cp -R benchmarks .pi/skills/redteam/
 cp agents/pentest-peer.md agents/pentest-peer-sonnet.md agents/pentest-peer-luna.md \
   agents/pentest-cohort-selector.md agents/pentest-run-recorder.md agents/luna-probe.md .pi/agents/
 cp -R pentest/. .pi/pentest/
@@ -65,7 +67,7 @@ Runtime code와 site data는 분리된다:
 │   ├── board/               # site-local export
 │   ├── memory/              # site-local curated knowledge
 │   └── cache/
-├── swarm.py / protocol.py / replay.py / postflight.py / kb.py / workspace.py
+├── swarm.py / protocol.py / scheduler.py / replay.py / benchmark.py / postflight.py / kb.py / workspace.py
 └── research/board/          # shared read-only operational research
 ```
 
@@ -336,12 +338,14 @@ attestation을 기록하고, operator는 원하는 시점에 동일 ledger snaps
 python3 .pi/pentest/swarm.py report
 python3 .pi/pentest/swarm.py export
 python3 .pi/pentest/swarm.py replay-export --strict
-python3 .pi/pentest/replay.py --events "$PENTEST_BOARD/replay.json" --policy fifo --strict
+python3 .pi/pentest/replay.py --events "$PENTEST_BOARD/replay.json" --policy fifo-v1 --strict
 ```
 
 `report`, legacy-compatible JSONL `export`, canonical replay projection은 선택된 workspace에
 atomic replace로 생성된다. 같은 snapshot의 replay export는 byte-identical하며 causal/evidence,
-claim-generation, work-fingerprint reference를 strict validation한다.
+claim-generation, work-fingerprint, decision-time candidate set을 strict validation한다. 대체
+policy는 ranking만 비교하며 outcome 우월성을 추정하지 않는다. Controlled effectiveness 비교는
+`SWARMBENCH.md`의 solo/isolated-parallel/shared-swarm manifest를 사용한다.
 
 ## Prompting discipline
 

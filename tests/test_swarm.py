@@ -4,6 +4,7 @@ import os
 import socket
 import sqlite3
 import subprocess
+import sys
 import threading
 import tempfile
 import time
@@ -15,6 +16,9 @@ SWARM = ROOT / "pentest" / "swarm.py"
 POSTFLIGHT = ROOT / "pentest" / "postflight.py"
 KB = ROOT / "pentest" / "kb.py"
 WORKSPACE = ROOT / "pentest" / "workspace.py"
+BENCHMARK = ROOT / "pentest" / "benchmark.py"
+sys.path.insert(0, str(ROOT / "pentest"))
+from scheduler import candidate_set_hash, rank_candidates
 
 
 class CliTest(unittest.TestCase):
@@ -274,6 +278,27 @@ class CliTest(unittest.TestCase):
         self.assertEqual("direct", self.run_swarm(
             "proxy-mode", "--agent", off["agent"],
         )["network_mode"])
+
+    def test_workstream_concentration_reports_share_and_hhi(self):
+        creator = self.join("concentration-creator")
+        work_index = 0
+        for stream, count in (("stream-a", 5), ("stream-b", 3), ("stream-c", 2)):
+            for _ in range(count):
+                work_index += 1
+                self.run_swarm(
+                    "task-add", "--agent", creator, "--key", f"concentration-{work_index}",
+                    "--kind", "analysis", "--title", f"work {work_index}",
+                    "--workstream", stream,
+                )
+        for index in range(10):
+            peer = self.join(f"concentration-{index}")
+            self.assertEqual("claimed", self.run_swarm(
+                "next", "--agent", peer, "--wait", 0, "--quiet", 999,
+            )["status"])
+        metrics = self.run_swarm("communication-metrics")
+        self.assertEqual(.5, metrics["dominant_workstream_share"])
+        self.assertEqual(.38, metrics["workstream_hhi"])
+        self.assertNotIn("workstream_herding_index", metrics)
 
     def test_typed_causal_protocol_links_work_confidence_and_metrics(self):
         creator = self.join("causal-creator")
@@ -826,6 +851,148 @@ class CliTest(unittest.TestCase):
         self.assertEqual("active-lease", recovered["status"])
         self.assertEqual(claim_id, recovered["claim_id"])
 
+    def test_scheduler_decision_and_claim_commit_atomically(self):
+        creator = self.join("scheduler-creator")
+        worker = self.join("scheduler-worker")
+        parent = self.run_swarm(
+            "task-add", "--agent", creator, "--key", "scheduler-parent",
+            "--kind", "analysis", "--title", "parent", "--priority", 50,
+            "--workstream", "scheduler",
+        )
+        child = self.run_swarm(
+            "task-add", "--agent", creator, "--key", "scheduler-child",
+            "--kind", "analysis", "--title", "child", "--priority", 100,
+            "--workstream", "scheduler", "--parent", parent["id"],
+        )
+        forbidden = self.run_swarm(
+            "task-add", "--agent", creator, "--key", "scheduler-forbidden",
+            "--kind", "analysis", "--title", "forbidden", "--priority", 90,
+            "--workstream", "scheduler", "--forbidden-actor", worker,
+        )
+        eligible = self.run_swarm(
+            "task-add", "--agent", creator, "--key", "scheduler-selected",
+            "--kind", "analysis", "--title", "selected", "--priority", 80,
+            "--workstream", "scheduler", "--information-gain", .9,
+        )
+        claimed = self.run_swarm(
+            "next", "--agent", worker, "--wait", 0, "--quiet", 999,
+        )
+        self.assertEqual(eligible["id"], claimed["id"])
+        conn = sqlite3.connect(self.db())
+        conn.row_factory = sqlite3.Row
+        decision = conn.execute(
+            "SELECT * FROM scheduler_decisions WHERE id=?", (claimed["scheduler_decision_id"],)
+        ).fetchone()
+        claim = conn.execute(
+            "SELECT * FROM work_claims WHERE id=?", (claimed["claim_id"],)
+        ).fetchone()
+        candidates = [dict(row) for row in conn.execute(
+            "SELECT * FROM scheduler_candidates WHERE decision_id=? ORDER BY work_id",
+            (decision["id"],),
+        )]
+        claim_event_body = json.loads(conn.execute(
+            "SELECT body_json FROM events WHERE seq=?", (claim["claim_event"],)
+        ).fetchone()[0])
+        conn.close()
+        self.assertEqual(claimed["claim_id"], decision["claim_id"])
+        self.assertEqual(claimed["id"], decision["selected_work_id"])
+        self.assertEqual(decision["id"], claim_event_body["scheduler_decision_id"])
+        reasons = {item["work_id"]: item["exclusion_reason"] for item in candidates}
+        self.assertEqual("parent-not-done", reasons[child["id"]])
+        self.assertEqual("forbidden-actor", reasons[forbidden["id"]])
+        self.assertEqual(decision["candidate_set_hash"], candidate_set_hash(candidates))
+        self.assertEqual(decision["candidate_set_hash"], candidate_set_hash(list(reversed(candidates))))
+        self.assertEqual(claimed["id"], rank_candidates(candidates, "fifo-v1")[0])
+
+    def test_fifo_v1_preserves_priority_creation_id_order(self):
+        creator = self.join("fifo-creator")
+        worker = self.join("fifo-worker")
+        self.run_swarm(
+            "task-add", "--agent", creator, "--key", "fifo-low",
+            "--kind", "analysis", "--title", "low", "--priority", 50,
+        )
+        first = self.run_swarm(
+            "task-add", "--agent", creator, "--key", "fifo-first",
+            "--kind", "analysis", "--title", "first", "--priority", 70,
+        )
+        second = self.run_swarm(
+            "task-add", "--agent", creator, "--key", "fifo-second",
+            "--kind", "analysis", "--title", "second", "--priority", 70,
+        )
+        claimed = self.run_swarm("next", "--agent", worker, "--wait", 0, "--quiet", 999)
+        self.assertEqual(first["id"], claimed["id"])
+        conn = sqlite3.connect(self.db())
+        ranks = dict(conn.execute(
+            "SELECT work_id,fifo_rank FROM scheduler_candidates WHERE decision_id=?",
+            (claimed["scheduler_decision_id"],),
+        ))
+        conn.close()
+        self.assertEqual(1, ranks[first["id"]])
+        self.assertEqual(2, ranks[second["id"]])
+
+    def test_scheduler_ranking_policies_use_decision_time_candidates_only(self):
+        candidates = [
+            {"work_id": 1, "eligible": 1, "exclusion_reason": None, "priority": 100,
+             "age_seconds": 100, "expected_information_gain": .1, "estimated_cost": 1,
+             "generation_count": 0, "verification_urgency": 0,
+             "workstream_active_claims": 0, "diversity_collision_count": 0,
+             "parent_depth": 0, "revisit_trigger_satisfied": 1, "fifo_rank": 1},
+            {"work_id": 2, "eligible": 1, "exclusion_reason": None, "priority": 90,
+             "age_seconds": 90, "expected_information_gain": .9, "estimated_cost": 1,
+             "generation_count": 0, "verification_urgency": 1,
+             "workstream_active_claims": 5, "diversity_collision_count": 5,
+             "parent_depth": 0, "revisit_trigger_satisfied": 1, "fifo_rank": 2},
+            {"work_id": 3, "eligible": 1, "exclusion_reason": None, "priority": 80,
+             "age_seconds": 80, "expected_information_gain": .9, "estimated_cost": 1,
+             "generation_count": 0, "verification_urgency": 0,
+             "workstream_active_claims": 0, "diversity_collision_count": 0,
+             "parent_depth": 0, "revisit_trigger_satisfied": 1, "fifo_rank": 3},
+            {"work_id": 999, "eligible": 0, "exclusion_reason": "parent-not-done",
+             "priority": 1000, "age_seconds": 1000, "expected_information_gain": 1,
+             "estimated_cost": 1, "generation_count": 0, "verification_urgency": 1,
+             "workstream_active_claims": 0, "diversity_collision_count": 0,
+             "parent_depth": 1, "revisit_trigger_satisfied": 1, "fifo_rank": None},
+        ]
+        self.assertEqual(1, rank_candidates(candidates, "fifo-v1")[0])
+        self.assertEqual(2, rank_candidates(candidates, "verify-first-v1")[0])
+        self.assertEqual(2, rank_candidates(candidates, "gain-per-cost-v1")[0])
+        self.assertEqual(3, rank_candidates(candidates, "diversity-aware-v1")[0])
+        for policy in ("fifo-v1", "verify-first-v1", "gain-per-cost-v1", "diversity-aware-v1"):
+            self.assertNotIn(999, rank_candidates(candidates, policy))
+
+    def test_strict_replay_rejects_scheduler_decision_claim_mismatch(self):
+        creator = self.join("scheduler-replay-creator")
+        worker = self.join("scheduler-replay-worker")
+        self.run_swarm(
+            "task-add", "--agent", creator, "--key", "scheduler-replay",
+            "--kind", "analysis", "--title", "scheduler replay",
+        )
+        self.run_swarm("next", "--agent", worker, "--wait", 0, "--quiet", 999)
+        path = self.home / "board" / "scheduler-replay.json"
+        self.run_swarm("replay-export", "--strict", "--output", path)
+        replayed = subprocess.run(
+            ["python3", str(ROOT / "pentest" / "replay.py"), "--events", str(path),
+             "--policy", "gain-per-cost-v1", "--strict"], text=True, capture_output=True,
+        )
+        self.assertEqual(0, replayed.returncode, replayed.stderr)
+        result = json.loads(replayed.stdout)
+        historical_candidates = {
+            item["work_id"] for item in json.loads(path.read_text())["scheduler_candidates"]
+        }
+        self.assertTrue(all(
+            set(item["ranked_work"]) <= historical_candidates for item in result["decision_replay"]
+        ))
+        corrupted = json.loads(path.read_text())
+        corrupted["scheduler_decisions"][0]["claim_id"] = 999999
+        corrupt_path = self.home / "board" / "scheduler-mismatch.json"
+        corrupt_path.write_text(json.dumps(corrupted))
+        rejected = subprocess.run(
+            ["python3", str(ROOT / "pentest" / "replay.py"),
+             "--events", str(corrupt_path), "--strict"], text=True, capture_output=True,
+        )
+        self.assertNotEqual(0, rejected.returncode)
+        self.assertIn("claim mismatch", rejected.stderr)
+
     def test_replay_export_is_deterministic_and_strictly_validated(self):
         agent = self.join("replay-agent")
         self.run_swarm(
@@ -1211,6 +1378,43 @@ class CliTest(unittest.TestCase):
         self.assertLessEqual(len(compact["completed_cohorts"]), 1)
         self.assertTrue(all(agent["status"] in {"active", "idle"} for agent in compact["agents"]))
 
+    def test_run_result_usage_telemetry_is_nullable_and_idempotent(self):
+        self.join("telemetry-peer")
+        recorded = self.run_swarm(
+            "run-result", "--label", "telemetry-peer", "--run-id", "telemetry-run",
+            "--provider", "test/model", "--status", "failed", "--category", "provider-error",
+            "--started-at", 10, "--ended-at", 12.5, "--input-tokens", 100,
+            "--output-tokens", 20, "--cache-read-tokens", 5, "--tool-calls", 7,
+            "--network-requests", 3,
+        )
+        self.assertTrue(recorded["recorded"])
+        stored = self.run_swarm("run-result-get", "--run-id", "telemetry-run")
+        self.assertEqual(10, stored["started_at"])
+        self.assertEqual(12.5, stored["ended_at"])
+        self.assertEqual(100, stored["input_tokens"])
+        self.assertEqual(7, stored["tool_calls"])
+        duplicate = self.run_swarm(
+            "run-result", "--label", "telemetry-peer", "--run-id", "telemetry-run",
+            "--provider", "test/model", "--status", "failed", "--category", "provider-error",
+        )
+        self.assertTrue(duplicate["duplicate"])
+        self.assertEqual(100, self.run_swarm(
+            "run-result-get", "--run-id", "telemetry-run",
+        )["input_tokens"])
+        missing = self.run_swarm(
+            "run-result", "--label", "missing-telemetry", "--run-id", "missing-telemetry-run",
+            "--status", "failed", "--category", "timeout",
+        )
+        self.assertTrue(missing["recorded"])
+        self.assertIsNone(self.run_swarm(
+            "run-result-get", "--run-id", "missing-telemetry-run",
+        )["input_tokens"])
+        negative = self.run_swarm(
+            "run-result", "--label", "x", "--run-id", "negative", "--status", "failed",
+            "--category", "timeout", "--tool-calls", -1, check=False,
+        )
+        self.assertIn("cannot be negative", negative.stderr)
+
     def test_postflight_classifies_failures_and_releases_leases(self):
         luna = self.join("luna-1.gen-1")
         self.join("claude-1.gen-1")
@@ -1280,6 +1484,99 @@ class CliTest(unittest.TestCase):
         with concurrent.futures.ThreadPoolExecutor(max_workers=11) as pool:
             second = list(pool.map(claim, survivors))
         self.assertEqual(1, len([r for r in second if r["status"] == "claimed"]))
+
+    def test_owner_cannot_resurrect_expired_claim(self):
+        creator = self.join("expiry-creator")
+        owner = self.join("expiry-owner")
+        self.run_swarm(
+            "task-add", "--agent", creator, "--key", "expiry-owner-work",
+            "--kind", "analysis", "--title", "strict expiry",
+        )
+        claimed = self.run_swarm(
+            "next", "--agent", owner, "--wait", 0, "--quiet", 999, "--lease", 1,
+        )
+        time.sleep(1.1)
+        expired = self.run_swarm(
+            "next", "--agent", owner, "--wait", 0, "--quiet", 999,
+        )
+        self.assertEqual("claim-expired", expired["status"])
+        self.assertEqual(claimed["claim_id"], expired["previous_claim_id"])
+        self.assertEqual("ready", expired["work_state"])
+        conn = sqlite3.connect(self.db())
+        self.assertEqual("expired", conn.execute(
+            "SELECT outcome FROM work_claims WHERE id=?", (claimed["claim_id"],)
+        ).fetchone()[0])
+        conn.close()
+
+    def test_other_peer_can_claim_immediately_after_expiry(self):
+        creator = self.join("takeover-creator")
+        owner = self.join("takeover-owner")
+        other = self.join("takeover-other")
+        self.run_swarm(
+            "task-add", "--agent", creator, "--key", "takeover-work",
+            "--kind", "analysis", "--title", "take over",
+        )
+        first = self.run_swarm(
+            "next", "--agent", owner, "--wait", 0, "--quiet", 999, "--lease", 1,
+        )
+        time.sleep(1.1)
+        takeover = self.run_swarm(
+            "next", "--agent", other, "--wait", 0, "--quiet", 999,
+        )
+        self.assertEqual("claimed", takeover["status"])
+        self.assertEqual(first["id"], takeover["id"])
+        self.assertNotEqual(first["claim_id"], takeover["claim_id"])
+
+    def test_expired_owner_cannot_append_claim_scoped_progress(self):
+        creator = self.join("expired-progress-creator")
+        owner = self.join("expired-progress-owner")
+        other = self.join("expired-progress-other")
+        self.run_swarm(
+            "task-add", "--agent", creator, "--key", "expired-progress",
+            "--kind", "analysis", "--title", "expired progress",
+        )
+        claimed = self.run_swarm(
+            "next", "--agent", owner, "--wait", 0, "--quiet", 999, "--lease", 1,
+        )
+        evidence = self.home / "scratch" / "too-late.txt"
+        evidence.write_text("late evidence")
+        time.sleep(1.1)
+        rejected = self.run_swarm(
+            "artifact-add", "--agent", owner, "--work", claimed["id"],
+            "--path", evidence, check=False,
+        )
+        self.assertIn("claim-expired", rejected.stderr)
+        conn = sqlite3.connect(self.db())
+        self.assertEqual(0, conn.execute("SELECT COUNT(*) FROM work_artifacts").fetchone()[0])
+        conn.close()
+        takeover = self.run_swarm(
+            "next", "--agent", other, "--wait", 0, "--quiet", 999,
+        )
+        self.assertEqual("claimed", takeover["status"])
+
+    def test_active_nonexpired_claim_is_renewed_normally(self):
+        creator = self.join("renew-live-creator")
+        owner = self.join("renew-live-owner")
+        other = self.join("renew-live-other")
+        self.run_swarm(
+            "task-add", "--agent", creator, "--key", "renew-live",
+            "--kind", "analysis", "--title", "renew live",
+        )
+        claimed = self.run_swarm(
+            "next", "--agent", owner, "--wait", 0, "--quiet", 999, "--lease", 1,
+        )
+        evidence = self.home / "scratch" / "renew-live.txt"
+        evidence.write_text("timely evidence")
+        time.sleep(.6)
+        added = self.run_swarm(
+            "artifact-add", "--agent", owner, "--work", claimed["id"], "--path", evidence,
+        )
+        self.assertEqual(claimed["claim_id"], added["claim_id"])
+        time.sleep(.6)
+        result = self.run_swarm(
+            "next", "--agent", other, "--wait", 0, "--quiet", 999,
+        )
+        self.assertNotEqual("claimed", result["status"])
 
     def test_ledger_activity_renews_lease(self):
         creator = self.join("creator")
@@ -1558,6 +1855,14 @@ class CliTest(unittest.TestCase):
         conn.execute("DROP INDEX findings_claim")
         conn.execute("DROP INDEX attestations_claim")
         conn.execute("DROP INDEX work_artifacts_legacy_unique")
+        conn.execute("DROP INDEX scheduler_candidates_work")
+        conn.execute("DROP TABLE scheduler_candidates")
+        conn.execute("DROP TABLE scheduler_decisions")
+        for column in (
+            "started_at", "ended_at", "input_tokens", "output_tokens", "cache_read_tokens",
+            "tool_calls", "network_requests",
+        ):
+            conn.execute(f"ALTER TABLE run_results DROP COLUMN {column}")
         conn.execute("ALTER TABLE agents DROP COLUMN proxy_fail_open")
         conn.execute("ALTER TABLE events DROP COLUMN trace_id")
         conn.execute("ALTER TABLE events DROP COLUMN claim_id")
@@ -1595,6 +1900,13 @@ class CliTest(unittest.TestCase):
         attestation_columns = {row[1] for row in migrated.execute("PRAGMA table_info(attestations)")}
         work_artifact_columns = {row[1] for row in migrated.execute("PRAGMA table_info(work_artifacts)")}
         claim_columns = {row[1] for row in migrated.execute("PRAGMA table_info(work_claims)")}
+        run_result_columns = {row[1] for row in migrated.execute("PRAGMA table_info(run_results)")}
+        scheduler_decision_columns = {
+            row[1] for row in migrated.execute("PRAGMA table_info(scheduler_decisions)")
+        }
+        scheduler_candidate_columns = {
+            row[1] for row in migrated.execute("PRAGMA table_info(scheduler_candidates)")
+        }
         migrated.close()
         self.assertIn("proxy_fail_open", agent_columns)
         self.assertIn("trace_id", event_columns)
@@ -1612,6 +1924,12 @@ class CliTest(unittest.TestCase):
             {"id", "engagement_id", "work_id", "actor_id", "generation", "claimed_at",
              "lease_until", "ended_at", "outcome", "claim_event"}, claim_columns,
         )
+        self.assertTrue({
+            "started_at", "ended_at", "input_tokens", "output_tokens", "cache_read_tokens",
+            "tool_calls", "network_requests",
+        } <= run_result_columns)
+        self.assertIn("candidate_set_hash", scheduler_decision_columns)
+        self.assertIn("exclusion_reason", scheduler_candidate_columns)
         self.assertEqual(1, dossier["active_cohort"]["number"])
         self.assertEqual(1, dossier["active_cohort"]["joined_peers"])
         self.assertEqual("wait", self.run_swarm(
@@ -1625,6 +1943,74 @@ class CliTest(unittest.TestCase):
         proc = self.run_swarm("dossier", check=False)
         self.assertNotEqual(0, proc.returncode)
         self.assertIn("scope.yaml changed", proc.stderr)
+
+    def test_swarmbench_aggregation_and_comparison_are_deterministic(self):
+        creator = self.join("bench-creator")
+        worker = self.join("bench-worker")
+        self.run_swarm(
+            "task-add", "--agent", creator, "--key", "bench-work",
+            "--kind", "analysis", "--title", "benchmark work", "--workstream", "bench",
+        )
+        claim = self.run_swarm("next", "--agent", worker, "--wait", 0, "--quiet", 999)
+        evidence = self.home / "scratch" / "bench.txt"
+        evidence.write_text("benchmark evidence")
+        artifact = self.run_swarm(
+            "artifact-add", "--agent", worker, "--work", claim["id"], "--path", evidence,
+        )
+        self.run_swarm("surface-add", "--agent", worker, "--path", "/bench")
+        self.run_swarm(
+            "attempt-add", "--agent", worker, "--work", claim["id"],
+            "--surface", "GET /bench", "--check", "access-control", "--result", "safe",
+        )
+        self.run_swarm(
+            "observe", "--agent", worker, "--work", claim["id"],
+            "--claim", "Benchmark observation", "--subjects", '["surface:GET /bench"]',
+            "--evidence", json.dumps([f"sha256:{artifact['sha256']}"]),
+        )
+        self.run_swarm("done", "--agent", worker, "--work", claim["id"])
+        self.run_swarm(
+            "run-result", "--label", "bench-worker", "--run-id", "bench-run",
+            "--status", "completed", "--category", "completed", "--started-at", 10,
+            "--ended-at", 20, "--input-tokens", 100, "--output-tokens", 25,
+            "--cache-read-tokens", 5, "--tool-calls", 8, "--network-requests", 2,
+        )
+        replay = self.home / "board" / "bench-replay.json"
+        self.run_swarm("replay-export", "--strict", "--output", replay)
+
+        reports = []
+        for condition, replay_count in (("solo", 1), ("isolated-parallel", 2), ("shared-swarm", 1)):
+            manifest = self.home / "board" / f"{condition}.manifest.json"
+            manifest.write_text(json.dumps({
+                "schema_version": 1, "benchmark_id": f"bench-{condition}",
+                "condition": condition, "repetition": 1, "target_snapshot": "lab-web-v1",
+                "wall_clock_budget_seconds": 2700,
+                "aggregate_model_budget": {"tokens": 1000, "cost": None},
+                "http_request_budget": 100, "starting_credentials": [],
+                "target_reset_state": "fixture-reset", "model_profiles": ["test/model"],
+                "replays": [replay.name] * replay_count,
+            }))
+            first = self.home / "board" / f"{condition}.report.json"
+            second = self.home / "board" / f"{condition}.report-copy.json"
+            self.run_cli(BENCHMARK, "aggregate", "--manifest", manifest, "--output", first)
+            self.run_cli(BENCHMARK, "aggregate", "--manifest", manifest, "--output", second)
+            self.assertEqual(first.read_bytes(), second.read_bytes())
+            reports.append(first)
+        shared = json.loads(reports[-1].read_text())
+        self.assertEqual(1, shared["outcomes"]["new_surfaces"])
+        self.assertEqual(1, shared["outcomes"]["tested_applicable_checks"])
+        self.assertEqual(100, shared["cost"]["input_tokens"])
+        self.assertEqual(10, shared["cost"]["wall_clock_seconds"])
+        self.assertGreater(shared["collaboration"]["typed_event_adoption_ratio"], 0)
+        comparison = self.home / "board" / "comparison.json"
+        command = ["compare"]
+        for report in reports:
+            command.extend(("--report", report))
+        command.extend(("--output", comparison))
+        self.run_cli(BENCHMARK, *command)
+        compared = json.loads(comparison.read_text())
+        self.assertEqual(1, compared["repetitions"]["shared-swarm"])
+        self.assertIn("parallelism_gain", compared["deltas"])
+        self.assertIn("collaboration_gain", compared["deltas"])
 
     def test_korean_and_structured_knowledge_search(self):
         (self.home / "research" / "board" / "recon-baseline.jsonl").write_text(

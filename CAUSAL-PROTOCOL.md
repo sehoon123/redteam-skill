@@ -1,6 +1,7 @@
 # Causal Collaboration Protocol
 
-This is the v3.5.1 causal-integrity foundation for the Evidence-Graph Swarm. SQLite domain tables
+This is the v3.6 causal-integrity and scheduler-observation foundation for the Evidence-Graph Swarm.
+SQLite domain tables
 remain authoritative; typed causal events explain why state changed and let fresh peers consume only
 relevant provenance. Evidence Graph entities and adaptive scheduling are still deliberately absent.
 `emit` remains a legacy escape hatch, especially for `task.blocked`.
@@ -104,8 +105,10 @@ now so replay can evaluate a later adaptive-frontier policy without changing liv
 
 Every lease creates a durable `work_claims` generation with its claim event and terminal outcome.
 Partial unique indexes enforce one active claim per actor and one per work. Repeated `next` calls by an
-actor return `active-lease` with the same claim and brief rather than hoarding another task. Expiry,
-`done`, `fail`, refusal, interruption, attestation, cohort end, and leave all close the active claim.
+actor return `active-lease` with the same claim and brief rather than hoarding another task. Expiry is
+strict: reaping happens before `next` renewal, expired owners receive `claim-expired`, and claim-scoped
+mutations cannot resurrect or append to the old generation. Non-expired validated activity renews the
+lease. `done`, `fail`, refusal, interruption, attestation, cohort end, and leave close active claims.
 
 Causal events, work-artifact associations, attempts, findings, and attestations record `claim_id` when
 they mutate leased work. Legacy rows remain nullable rather than receiving invented provenance.
@@ -165,24 +168,47 @@ Reports:
 
 These are aggregate operator metrics. They are not shown as peer scores, ranks, points, or rewards.
 
+## Scheduler decision observation
+
+The live scheduler remains `fifo-v1`. Each successful new claim records, in the same transaction:
+
+- the selected work and resulting claim
+- every ready/leased decision-time candidate
+- eligibility or an explicit exclusion reason
+- priority, age, gain/cost, prior generations, verification urgency
+- active workstream/diversity collisions, parent depth, and revisit-trigger state
+- a canonical candidate-set SHA-256
+
+This records why FIFO selected a task without changing selection behavior.
+
 ## Deterministic replay
 
 ```bash
 python3 .pi/pentest/swarm.py replay-export --strict
 python3 .pi/pentest/replay.py --events \
-  .pi/pentest/engagements/<id>/board/replay.json --policy fifo --strict
+  .pi/pentest/engagements/<id>/board/replay.json --policy fifo-v1 --strict
+# ranking-only alternatives:
+# verify-first-v1 | gain-per-cost-v1 | diversity-aware-v1
 ```
 
 The canonical export contains ordered causal events, work claims, fingerprints, and the
 work/workstream/evidence projection with no export timestamp. Repeated exports of one snapshot are
 byte-identical. Strict validation reruns typed-body protocol validation and rejects missing or forward
 causal refs, unknown evidence prefixes, invalid response/decision ancestry or supersession scope,
-claim/work/actor mismatches, fingerprint drift, and broken work provenance. Relational SQLite remains authoritative; this is a
-coordination replay, not a claim that secret values or arbitrary target state can be reconstructed.
+claim/work/actor mismatches, fingerprint drift, candidate-set hash drift, ineligible selections, and
+broken work provenance. Alternative policies rank only the candidates that existed at each historical
+decision. They do not infer counterfactual outcomes. Relational SQLite remains authoritative; this is
+a coordination replay, not a claim that secret values or arbitrary target state can be reconstructed.
+
+## SwarmBench before Evidence Graph
+
+`SWARMBENCH.md` defines controlled solo, isolated-parallel, and shared-swarm conditions. Deterministic
+aggregation separates parallelism gain from collaboration gain and preserves unavailable usage as
+`null`. At least three reset repetitions per condition are required before making effectiveness claims.
 
 ## Next Evidence-Graph increments
 
-Deliberately deferred until replay data can justify them:
+Deliberately deferred until benchmark and decision-replay data can justify them:
 
 1. entity/relation/capability/permission projection
 2. applicability-weighted coverage

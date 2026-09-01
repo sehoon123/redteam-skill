@@ -93,10 +93,16 @@ function quoted(value) {
   return JSON.stringify(String(value));
 }
 
+function appendMetric(parts, flag, value) {
+  if (typeof value === "number" && isFinite(value) && value >= 0) {
+    parts.push(flag + " " + quoted(value));
+  }
+}
+
 function recordTerminal(label, result, category) {
   var runId = result.runId || ("cohort-" + cohortNumber + ":" + label);
   var provider = result.model || "";
-  var command = [
+  var commandParts = [
     "python3 .pi/pentest/swarm.py run-result",
     "--label " + quoted(label),
     "--run-id " + quoted(runId),
@@ -104,7 +110,19 @@ function recordTerminal(label, result, category) {
     "--status failed",
     "--category " + quoted(category),
     "--detail " + quoted("rolling supervisor recorded " + category)
-  ].join(" ");
+  ];
+  var startedAt = typeof result.startedAt === "number" ? result.startedAt / 1000 : null;
+  var endedAt = typeof result.durationMs === "number" && typeof result.startedAt === "number"
+    ? (result.startedAt + result.durationMs) / 1000 : null;
+  var usage = result.usage || {};
+  appendMetric(commandParts, "--started-at", startedAt);
+  appendMetric(commandParts, "--ended-at", endedAt);
+  appendMetric(commandParts, "--input-tokens", usage.inputTokens);
+  appendMetric(commandParts, "--output-tokens", usage.outputTokens);
+  appendMetric(commandParts, "--cache-read-tokens", usage.cacheReadTokens);
+  appendMetric(commandParts, "--tool-calls", result.toolCount);
+  appendMetric(commandParts, "--network-requests", result.networkRequests);
+  var command = commandParts.join(" ");
   var verifyCommand = [
     "python3 .pi/pentest/swarm.py run-result-get",
     "--run-id " + quoted(runId),

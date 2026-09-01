@@ -1,9 +1,9 @@
 # Redteam Skill
 
 Pi용 phase-free multi-agent penetration testing skill. 모든 peer가 동시에 시작해
-transactional ledger에서 스스로 workstream을 만들고 claim·handoff·verify한다. v3.5.1은
-blackboard 위에 typed causal protocol, durable claim provenance, task-local brief,
-deterministic replay를 추가한다.
+transactional ledger에서 스스로 workstream을 만들고 claim·handoff·verify한다. v3.6은
+strict claim expiry, typed causal protocol, decision-time FIFO observation, task-local brief,
+deterministic replay와 SwarmBench 집계를 제공한다.
 
 ## 핵심
 
@@ -23,11 +23,12 @@ deterministic replay를 추가한다.
 - **Zero-admin bootstrap** — `/redteam <URL>`이 site create/select/init를 자동 처리
 - **Typed causal protocol** — observation→hypothesis→experiment의 trace/evidence/confidence 보존
 - **Task-local brief** — fresh peer가 unrelated global history 대신 claimed work provenance만 로드
-- **Deterministic replay** — canonical replay export와 operator-only communication metrics
+- **Deterministic replay** — exact candidate snapshot에서 4개 ranking policy를 비교
+- **SwarmBench** — solo/isolated-parallel/shared-swarm 결과와 nullable usage를 결정론적으로 집계
 
 설계 근거: `RESEARCH.md` (OpenAI technical report, METR, Hugging Face timeline,
 Black Hat 발표). Runtime 규약: `SWARM.md`. 프롬프팅 실험: `PROMPTING-RESEARCH.md`.
-실제 ginandjuice.shop 실행 기록: `VALIDATION.md`.
+Benchmark 계약: `SWARMBENCH.md`. 실제 실행 기록: `VALIDATION.md`.
 
 ## 구조
 
@@ -39,6 +40,7 @@ Black Hat 발표). Runtime 규약: `SWARM.md`. 프롬프팅 실험: `PROMPTING-R
 ├── PROXY.md
 ├── WORKSPACES.md
 ├── CAUSAL-PROTOCOL.md
+├── SWARMBENCH.md
 ├── VALIDATION.md
 ├── settings.json
 ├── agents/pentest-peer.md          # Opus autonomous loop
@@ -48,11 +50,12 @@ Black Hat 발표). Runtime 규약: `SWARM.md`. 프롬프팅 실험: `PROMPTING-R
 ├── agents/pentest-run-recorder.md  # host-verified terminal recording, xhigh
 ├── agents/luna-probe.md            # bounded proxy-auto Luna experiment
 ├── workflows/cohort.js             # canonical launch; cohort 1 Sonnet, 2+ Opus
+├── benchmarks/manifests/           # controlled solo/isolated/shared examples
 ├── pentest/
 │   ├── swarm.py
 │   ├── postflight.py          # parent-side terminal-result/lease recovery
 │   ├── kb.py
-│   ├── protocol.py / replay.py
+│   ├── protocol.py / scheduler.py / replay.py / benchmark.py
 │   ├── active-engagement
 │   ├── engagements/<id>/
 │   │   ├── scope.yaml

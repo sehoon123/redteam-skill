@@ -212,3 +212,25 @@ than inventing claim or causal provenance retroactively.
 This is deliberately the replayable v3.5.1 substrate, not a claim that graph-frontier scheduling is
 already validated. Capability/entity projection and adaptive scheduling remain subsequent changes to
 be evaluated against these exports.
+
+## Strict expiry, SwarmBench, and scheduler observation — 2026-09-02
+
+The v3.6 suite contains 56 deterministic tests. Additions verify:
+
+- expired owners cannot resurrect claims or append claim-scoped progress;
+- another peer can reap and claim immediately, while timely activity still renews normally;
+- `run_results` timing/usage remains nullable, non-negative, and idempotently enrichable;
+- every new claim atomically records a complete decision-time candidate set and explicit exclusions;
+- `fifo-v1` preserves priority/creation/ID ordering and candidate hashes are stable;
+- strict replay rejects decision↔claim/hash mismatches and never ranks absent/ineligible work;
+- four ranking-only policies consume the same historical candidates without outcome claims;
+- dominant workstream share and true HHI are independently calculated;
+- solo/isolated-parallel/shared-swarm aggregation and comparison produce byte-identical reports;
+- legacy migrations add telemetry and scheduler tables without rewriting historical claims/events.
+
+The existing GJ02 ledger also migrated through v3.6 without target traffic: strict replay over 553
+events and 57 work items reported zero errors and correctly retained zero historical scheduler
+decisions rather than inventing candidate snapshots.
+
+The live policy remains `fifo-v1`. Evidence/Capability Graph and adaptive live scheduling remain
+deliberately out of scope until controlled SwarmBench repetitions provide effectiveness evidence.
