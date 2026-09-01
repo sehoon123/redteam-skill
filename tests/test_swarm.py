@@ -1196,6 +1196,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(3, script.count("acceptance: false"))
         self.assertIn("timeoutMs: 600000", script)
         self.assertIn("8개 claim 완료 또는 7분", script)
+        self.assertIn("causal ancestry/evidence로 명시적으로 소비", script)
         self.assertIn('var providerKey = "claude"', script)
         self.assertIn("status --provider", script)
         self.assertIn("function recordTerminal", script)

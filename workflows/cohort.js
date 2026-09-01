@@ -29,6 +29,7 @@ var peerTask = [
   "모든 target HTTP traffic은 exec-http로만 실행하고 직접 curl/Python/browser request를 보내지 마.",
   "completed/error partial_experiments는 기존 evidence를 checkpoint하고, prepared는 exec-http pre-send recovery만 사용하며, sending은 반복하지 마.",
   "결과는 checkpoint 한 번으로 해석, follow-up 생성, work 종료까지 원자적으로 남겨.",
+  "다른 peer의 durable assertion이나 work가 brief/inbox에 있고 현재 판단과 관련될 때는 causal ancestry/evidence로 명시적으로 소비하되 억지 handoff를 만들지 마.",
   "provider refusal이나 429는 재시도, paraphrase, resume, reroute, fallback하지 마.",
   "유한 timeout을 사용해. 이 cohort에서 8개 claim 완료 또는 7분 중 먼저 도달하면 새 claim을 받지 말고 leave --summary로 종료해."
 ].join(" ");
