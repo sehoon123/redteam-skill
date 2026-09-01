@@ -453,26 +453,18 @@ GPT-5.6은 **계정 차단** → 7일 쿨다운 필요.
 5. cohort 종료 후 쿨다운 기간을 두고 다음 cohort 시작
 ```
 
-### 규칙 8: MIXED AUTONOMY — Claude 5 + Luna 3, 도메인 분배 없음
+### 규칙 8: MIXED AUTONOMY — Claude 5 + Luna 3
 
 Claude 5개를 유지하고 Luna 3개를 추가한다. 모두 동일한 ledger를 공유하고
-역할 분배 없이 자율적으로 작업한다. 도메인을 나누는 것은 고정 역할이며,
-이 skill의 원칙에 반한다.
+역할 분배 없이 자율적으로 작업한다.
 
 ```
-Claude peer 1–5: pentest-peer agent (보안 어휘 허용)
-Luna peer 6–8: pentest-peer-luna agent (보안 어휘 자동 회피)
+Claude peer 1–5: pentest-peer agent
+Luna peer 6–8: pentest-peer-luna agent
 
-둘 다 동일한 work를 claim하고 동일한 finding을 검증한다.
-Luna가 발견한 것을 Claude가 검증하고, Claude가 발견한 것을 Luna가 검증한다.
-Luna peer가 cyber_policy로 죽으면 lease가 expire되고 다른 peer가 takeover한다.
-도메인 분배는 operator가 정하는 게 아니라 각 peer가 ledger 상태를 보고 스스로 결정한다.
+모든 peer는 동일한 work를 claim하고 동일한 finding을 검증한다.
+peer가 죽으면 lease가 expire되고 다른 peer가 takeover한다.
 ```
-
-Luna는 자연스럽게 비즈니스 로직/입력 검증/접근 제어 작업을 더 많이 처리하게 된다
-(보안 어휘 없이 claim 가능하바로). Claude는 보안 도메인 작업을
-더 많이 처리하게 된다 (Luna가 cyber_policy로 떨어져나가면).
-이것은 operator가 정한 역할이 아니라 peer 능력에 따른 자연스러운 분업이다.
 
 ## GPT-5.6 실험 결과 (RT-2026-GJ02-GPT56)
 

@@ -176,10 +176,8 @@ subagent({
 })
 ```
 
-모든 peer는 동일한 ledger에서 자율적으로 work를 claim한다. Luna가 발견한 것을
-Claude가 검증하고, Claude가 발견한 것을 Luna가 검증한다. 도메인 분배는
-operator가 정하는 게 아니라 각 peer가 ledger 상태를 보고 스스로 결정한다.
-Luna peer가 cyber_policy로 죽으면 lease가 expire되고 다른 peer가 takeover한다.
+모든 peer는 동일한 ledger에서 자율적으로 work를 claim한다.
+peer가 죽으면 lease가 expire되고 다른 peer가 takeover한다.
 
 ## Peer runtime
 
