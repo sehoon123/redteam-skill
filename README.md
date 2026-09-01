@@ -53,8 +53,41 @@ cp SKILL.md SWARM.md RESEARCH.md PROMPTING-RESEARCH.md VALIDATION.md .pi/skills/
 cp agents/pentest-peer.md agents/pentest-peer-luna.md .pi/agents/
 cp -R pentest/. .pi/pentest/
 # settings.json의 override를 .pi/settings.json에 병합
-# provider가 다르면 /subagents-models pentest-peer로 registry ID를 확인해 수정
 ```
+
+### ⚠️ 모델명 설정
+
+`settings.json`의 모델 ID는 예시이며, **각자의 provider 환경에 맞게 변경**해야 한다.
+현재 예시는 IBM ICA Services 라우터를 사용한다:
+
+```jsonc
+// settings.json — 자신의 provider/model ID로 교체
+{
+  "subagents": {
+    "agentOverrides": {
+      "pentest-peer": {
+        "model": "<your-provider>/claude-opus-4-8",  // Claude provider
+        "thinking": "xhigh",
+        "fallbackModels": []
+      },
+      "pentest-peer-luna": {
+        "model": "<your-provider>/gpt-5.6-luna",     // OpenAI provider
+        "thinking": "xhigh",
+        "fallbackModels": []
+      }
+    }
+  }
+}
+```
+
+Provider ID 확인 방법:
+- Pi CLI: `/subagents-models pentest-peer` 또는 `/models`
+- 설정 파일: `~/.pi/agent/models.json`의 `providers` 섹션
+- 예: OpenAI 직접 API → `openai/gpt-5.6-luna`, AWS Bedrock → `bedrock/...`,
+  Azure → `azure/...`, 로컬 라우터 → `ica-services-openai/...` 등
+
+`fallbackModels`는 비워 둘 것을 권장한다. Refusal 시 다른 모델로 자동 우회하면
+실험 결과가 오염되고 계정 수준 threshold가 누적된다.
 
 ## 사용
 
