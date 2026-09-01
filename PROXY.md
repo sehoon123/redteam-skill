@@ -1,116 +1,69 @@
 # Proxy Auto Policy
 
-Proxy mode is fail-open by default so offline analysis and reverse engineering are never blocked:
+Default `PENTEST_PROXY_POLICY=auto` keeps offline analysis available without bypassing a reachable
+intercepting proxy.
 
-- Proxy reachable: record `proxy.checked`; all target traffic must use it.
-- Proxy connection unavailable: record `proxy.unavailable`, print a warning, and continue in
-  `direct` mode.
-- Proxy accepts the connection but rejects CONNECT: record `proxy.rejected` and stop. A reachable
-  proxy must not be bypassed.
+- reachable CONNECT: `proxy.checked`, network mode `proxy`
+- connection unavailable: `proxy.unavailable`, warning, network mode `direct`
+- reachable CONNECT rejection: `proxy.rejected`, blocked
+- `required`: unavailable and rejected both block
+- `off`: explicit direct/offline mode
 
-The default endpoint is `${PENTEST_PROXY:-http://127.0.0.1:8080}`.
+The default endpoint is `${PENTEST_PROXY:-http://127.0.0.1:8080}`. This policy is fail-open by default
+only for confirmed connection-level unavailability, never for a reachable rejection.
 
 ## Startup
 
+`peer-start` combines join, proxy preflight, grounded claim, and brief:
+
 ```bash
 . .pi/pentest/engagement_env.sh
-JOIN=$(python3 .pi/pentest/swarm.py join --label "$LABEL" \
-  --proxy-policy "${PENTEST_PROXY_POLICY:-auto}")
-# Extract AGENT from JOIN, then:
-. .pi/pentest/proxy_env.sh --agent "$AGENT"
-python3 .pi/pentest/swarm.py proxy-check --agent "$AGENT" \
-  --proxy "$PENTEST_PROXY" --timeout 5
-. .pi/pentest/proxy_env.sh --agent "$AGENT"
+python3 .pi/pentest/swarm.py peer-start --label "$LABEL" \
+  --proxy-policy "${PENTEST_PROXY_POLICY:-auto}" --proxy "$PENTEST_PROXY"
 ```
 
-`next` waits for a trusted decision: `proxy.checked` and auto-policy `proxy.unavailable` allow work;
-latest `proxy.rejected` blocks it. Generic `emit` cannot forge these events. Source `engagement_env.sh` and `proxy_env.sh --agent "$AGENT"` in every new shell;
-the latter restores `PENTEST_NETWORK_MODE` from the ledger and configures or unsets proxy variables.
+`next` still refuses a proxy-required agent without trusted `proxy.checked` or allowed
+`proxy.unavailable`. Generic `emit` cannot forge proxy events. `proxy_env.sh --agent "$AGENT"` remains
+available for bounded offline/local tools, setting or unsetting `HTTP_PROXY`/`HTTPS_PROXY` and
+`PENTEST_NETWORK_MODE` from the ledger.
 
-Strict fail-closed behavior remains available:
+Strict mode:
 
 ```bash
 PENTEST_PROXY_POLICY=required pi
-# or join --proxy-policy required
 ```
 
-`--proxy-policy off` skips preflight entirely and is intended only for explicitly offline workflows.
+## Target HTTP traffic
 
-## Tool settings
-
-Always branch on `PENTEST_NETWORK_MODE`. Use finite timeouts in both modes.
-
-### curl
+Peers do not configure curl, Python requests, aiohttp, Playwright, Selenium, browser/CDP, or custom
+sockets for target traffic. They call only:
 
 ```bash
-. .pi/pentest/engagement_env.sh
-. .pi/pentest/proxy_env.sh --agent "$AGENT"
-if [ "$PENTEST_NETWORK_MODE" = proxy ]; then
-  curl --proxy "$PENTEST_PROXY" \
-    --proxy-header "X-Redteam-Agent: $AGENT" \
-    --proxy-header "X-Redteam-Engagement: $PENTEST_ENGAGEMENT_ID" \
-    --connect-timeout 10 --max-time 30 "$URL"
-else
-  curl --connect-timeout 10 --max-time 30 "$URL"
-fi
+python3 .pi/pentest/swarm.py exec-http \
+  --agent "$AGENT" --work "$WORK" \
+  --method GET --url "$URL" --check "$CHECK" --timeout 30
 ```
 
-### Python requests
+The host runner:
 
-```python
-import os, requests
-kwargs = {"timeout": 30}
-if os.environ["PENTEST_NETWORK_MODE"] == "proxy":
-    proxy = os.environ["PENTEST_PROXY"]
-    kwargs["proxies"] = {"http": proxy, "https": proxy}
-response = requests.get(url, **kwargs)
-```
+1. reads the latest trusted proxy event instead of ambient child shell variables;
+2. uses explicit stdlib `ProxyHandler({"http": proxy, "https": proxy})` in proxy mode;
+3. uses explicit `ProxyHandler({})` in direct mode;
+4. validates URL host/port against the selected scope;
+5. rejects URL credentials/fragments plus caller-owned provenance, `Host`, proxy, connection, and framing headers;
+6. rechecks the live/non-stalled claim immediately before send;
+7. disables redirect following, retries, and fallback;
+8. injects agent/claim/experiment/engagement IDs;
+9. enforces a total operation deadline and bounded body/header capture.
 
-### Python standard library
+A redirect response is evidence but its destination is not requested. Expired/superseded claims cannot
+send through the runner. Direct ad-hoc target traffic is outside the v3.7 contract because it cannot be
+fenced or atomically checkpointed.
 
-```python
-import os, urllib.request
-handlers = []
-if os.environ["PENTEST_NETWORK_MODE"] == "proxy":
-    proxy = os.environ["PENTEST_PROXY"]
-    handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
-else:
-    handlers.append(urllib.request.ProxyHandler({}))
-response = urllib.request.build_opener(*handlers).open(url, timeout=30)
-```
+## Evidence and limitation
 
-### httpx / aiohttp
+CONNECT preflight carries agent and engagement IDs. Application requests additionally carry claim and
+experiment IDs. Request/response artifacts and a partial/error attempt are committed by the host runner.
 
-```python
-# proxy is None in direct mode
-proxy = os.environ.get("PENTEST_PROXY") if os.environ["PENTEST_NETWORK_MODE"] == "proxy" else None
-with httpx.Client(proxy=proxy, timeout=30) as client:
-    response = client.get(url)
-
-# proxy_env.sh sets or unsets standard proxy variables
-async with aiohttp.ClientSession(trust_env=True) as session:
-    async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
-        ...
-```
-
-### Playwright / Chromium / Selenium
-
-```python
-launch = ({"proxy": {"server": os.environ["PENTEST_PROXY"]}}
-          if os.environ["PENTEST_NETWORK_MODE"] == "proxy" else {})
-browser = await playwright.chromium.launch(**launch)
-# Add --proxy-server only in proxy mode for raw Chromium/CDP or Selenium.
-```
-
-### Other tools
-
-- `wget`: standard proxy variables are set only in proxy mode.
-- Node built-in `fetch`: configure an explicit dispatcher only in proxy mode.
-- Custom sockets, raw TLS, DNS clients, and offline reversing tools may run directly when the ledger
-  mode is `direct`.
-
-## Evidence
-
-CONNECT preflight carries `X-Redteam-Agent` and `X-Redteam-Engagement`. The ledger preserves both
-successful proxy use and explicit fail-open decisions, but application-level settings cannot prove
-that every library honored the selected mode.
+Application-level policy cannot prove infrastructure egress isolation, and SQLite cannot make remote
+HTTP exactly once across host process death. Operators still need network allowlists and kill switches.

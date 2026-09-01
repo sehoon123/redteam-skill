@@ -54,6 +54,12 @@ python3 .pi/pentest/swarm.py hypothesize \
   --caused-by 81
 ```
 
+New v3.7 causal envelopes use storage `schema_version=2`; version 1 replay rows are grandfathered.
+A hypothesis or hypothesis-kind next action must cite an artifact, attempt, finding, observation, or
+recursively evidence-backed causal ancestor. A credential grounds work only when linked to an evidence-backed
+finding; a bare credential or free-form legacy event does not. Empty engagements receive
+deterministic baseline experiment work instead of speculative hypotheses.
+
 ### Atomic request → work transition
 
 `request` and `challenge` require at least one structured next action. Event and work creation commit in
@@ -103,27 +109,28 @@ now so replay can evaluate a later adaptive-frontier policy without changing liv
 
 ## Claim provenance
 
-Every lease creates a durable `work_claims` generation with its claim event and terminal outcome.
-Partial unique indexes enforce one active claim per actor and one per work. Repeated `next` calls by an
-actor return `active-lease` with the same claim and brief rather than hoarding another task. Expiry is
-strict: reaping happens before `next` renewal, expired owners receive `claim-expired`, and claim-scoped
-mutations cannot resurrect or append to the old generation. Non-expired validated activity renews the
-lease. `done`, `fail`, refusal, interruption, attestation, cohort end, and leave close active claims.
+Every lease creates a durable `work_claims` generation with its claim event, configured lease/no-progress
+windows, `last_progress_at`, optional brief timestamp, and terminal outcome. Partial unique indexes enforce
+one active claim per actor and one per work. Repeated `next` calls return the same `active-lease` without
+renewal. Expiry and no-progress are distinct: deadline reaping yields `expired`; a live lease with no
+material progress yields `stalled`. Bookkeeping, inbox, brief, and heartbeat never renew. Host execution,
+current-claim artifact/attempt, typed assertion, finding, or attestation may renew only a still-live claim.
+No activity resurrects an ended generation.
 
 Causal events, work-artifact associations, attempts, findings, and attestations record `claim_id` when
 they mutate leased work. Legacy rows remain nullable rather than receiving invented provenance.
 
 ## Task-local brief
 
-Normal startup is now:
+Normal startup is one control-plane call:
 
 ```text
-minimal status → proxy decision → next --brief → execute
+peer-start → join + proxy decision + bootstrap/claim + brief
 ```
 
 ```bash
-python3 .pi/pentest/swarm.py next --agent "$AGENT" --brief \
-  --brief-tokens 2200 --after "$CURSOR"
+python3 .pi/pentest/swarm.py peer-start --label '<assigned-label>' --continuous \
+  --lease 180 --no-progress 120 --brief-tokens 1400
 ```
 
 Or refresh an owned lease:
@@ -133,22 +140,27 @@ python3 .pi/pentest/swarm.py brief --agent "$AGENT" --work "$WORK" \
   --max-tokens 2200 --after "$CURSOR"
 ```
 
-The brief contains the current work, workstream snapshot, confirmed facts, live hypotheses, negative
-paths, relevant artifacts/findings/attestations, referenced credentials, contradictions, open
-questions, and recommended experiments. Every assertion retains its event/evidence refs. Events and
+The brief begins with any uncheckpointed `partial_experiments` and their exact remaining action, then
+contains the current work, workstream snapshot, confirmed facts, live hypotheses, negative paths,
+relevant artifacts/findings/attestations, referenced credentials, contradictions, open questions, and
+recommended experiments. A takeover must checkpoint existing response evidence instead of repeating
+its request. Every assertion retains its event/evidence refs. Events and
 artifacts from unrelated workstreams are excluded. Oversized core values become hash-addressed refs
 rather than arbitrary string truncation.
 
-## Progress-bearing completion
+## Atomic execution and semantic checkpoint
 
-Completion reads only progress attached to the **current claim generation**. Execution work needs a
-current-claim artifact, attempt, finding/attestation, or evidence-bearing typed assertion. Planning,
-analysis, research, hypothesis, and synthesis work may also use a current-claim typed knowledge
-assertion. Coverage additionally requires a current-claim attempt for its exact work. One-shot peers
-still require a current-claim artifact.
+`exec-http` commits an ExperimentSpec before target I/O, fences immediately before sending, then records
+bounded request/response artifacts, canonical surface/check, and a claim-linked `partial|error` attempt.
+The runner never converts an HTTP status into a vulnerability verdict. A duplicate request fingerprint
+returns the existing experiment rather than sending again.
 
-Evidence from an expired, released, or failed generation cannot complete a later claim. This turns a
-lease heartbeat into preserved collective progress rather than mere activity.
+`checkpoint` validates that the experiment belongs to the same work and has durable attempt/artifacts,
+then creates one existing typed causal assertion, structured next work, experiment checkpoint, and
+work/claim completion in one transaction. A new generation may interpret an old generation's durable
+experiment; its new assertion/completion uses the new claim while original I/O provenance remains old.
+Malformed evidence or next work rolls back the entire checkpoint. Coverage must still match its exact
+surface/check and verification must still finish through independent attestation.
 
 ## Operator-only communication metrics
 
@@ -191,12 +203,13 @@ python3 .pi/pentest/replay.py --events \
 # verify-first-v1 | gain-per-cost-v1 | diversity-aware-v1
 ```
 
-The canonical export contains ordered causal events, work claims, fingerprints, and the
-work/workstream/evidence projection with no export timestamp. Repeated exports of one snapshot are
+The canonical export contains ordered causal events, work claims, fingerprints, experiments,
+provider circuits, execution metrics, and the work/workstream/evidence projection with no export timestamp. Repeated exports of one snapshot are
 byte-identical. Strict validation reruns typed-body protocol validation and rejects missing or forward
 causal refs, unknown evidence prefixes, invalid response/decision ancestry or supersession scope,
-claim/work/actor mismatches, fingerprint drift, candidate-set hash drift, ineligible selections, and
-broken work provenance. Alternative policies rank only the candidates that existed at each historical
+claim/work/actor mismatches, experiment→attempt/artifact/checkpoint drift, fingerprint drift,
+candidate-set hash drift, invalid provider circuits, ineligible selections, and broken work provenance.
+Alternative policies rank only the candidates that existed at each historical
 decision. They do not infer counterfactual outcomes. Relational SQLite remains authoritative; this is
 a coordination replay, not a claim that secret values or arbitrary target state can be reconstructed.
 
@@ -206,7 +219,7 @@ a coordination replay, not a claim that secret values or arbitrary target state 
 aggregation separates parallelism gain from collaboration gain and preserves unavailable usage as
 `null`. At least three reset repetitions per condition are required before making effectiveness claims.
 
-## Next Evidence-Graph increments
+## Deferred Evidence-Graph increments
 
 Deliberately deferred until benchmark and decision-replay data can justify them:
 
@@ -217,5 +230,5 @@ Deliberately deferred until benchmark and decision-replay data can justify them:
 5. ephemeral synthesis/steward leases
 6. task-shape-driven cohort composition
 
-This ordering keeps arbitration deterministic while moving hypothesis generation and experimentation
-toward a distributed evidence graph.
+Do not implement these until atomic assertion completion reaches at least 80% and controlled
+Solo/isolated/shared repetitions show a collaboration bottleneck they would address.

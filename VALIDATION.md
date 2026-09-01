@@ -140,11 +140,10 @@ Operational lessons and fixes:
 1. At the time, `join` was proxy-required and `next` refused a lease until dedicated `proxy-check`
    recorded a scoped CONNECT success. The later operator-requested auto policy keeps this trusted
    decision gate but accepts an explicit `proxy.unavailable` result.
-2. Curl-only guidance was insufficient. `proxy_env.sh` exports upper/lowercase proxy variables, while
-   `PROXY.md` requires explicit settings for requests, urllib, httpx, aiohttp, Playwright, Selenium,
-   Chromium/CDP, wget, and Node.
-3. Shell state does not persist between tool calls, so peers must source `proxy_env.sh` in every new
-   shell. Libraries that ignore environment proxies must use their own `proxy=` or `trust_env=True`.
+2. Curl-only guidance was insufficient. At that time peers configured requests/urllib/httpx/aiohttp
+   and browser clients individually; v3.7 supersedes this error-prone contract with host-owned `exec-http`.
+3. Shell state did not persist between tool calls. v3.7 `peer-start` reads proxy state from the ledger,
+   and direct ad-hoc target clients are now prohibited rather than repeatedly reconfigured.
 4. Preflight evidence proves the proxy was reachable, not that every later library obeyed it. Strict
    deployments still require operator egress rules; auto mode deliberately permits direct traffic
    only after connection-level unavailability is recorded.
@@ -234,3 +233,48 @@ decisions rather than inventing candidate snapshots.
 
 The live policy remains `fifo-v1`. Evidence/Capability Graph and adaptive live scheduling remain
 deliberately out of scope until controlled SwarmBench repetitions provide effectiveness evidence.
+
+## GJ03 failure isolation and v3.7 atomic execution — 2026-09-02
+
+Fresh live engagement `RT-2026-GJ03-SHARED-R1` used five Sonnet plus three Luna contexts for ten
+minutes. Only seven joined; terminal outcomes were two completed handoffs, five timeouts, and one
+provider 429. Four claims all expired. Despite 102 tool calls, the ledger had zero attempts, surfaces,
+or findings. Strict replay over 46 events, three work items, four claims, and four scheduler decisions
+had zero errors. One expired-claim takeover preserved two root-response artifacts, proving fencing and
+generation recovery but not collective effectiveness.
+
+This isolated the root defect: target HTTP happened before separate model-owned artifact/attempt/event
+bookkeeping. v3.7 moves only that boundary into host code and keeps semantic reasoning distributed.
+
+The deterministic suite now contains 67 tests, including ten loopback-only HTTP tests:
+
+- one `peer-start` returns network mode, grounded claim, and task-local brief;
+- `exec-http` sees a live/non-stalled claim before send, injects four provenance headers, disables redirects,
+  rejects out-of-scope URL schemes/forged Host/framing headers, enforces total timeout and bounded
+  body/header capture, and commits two artifacts plus
+  a partial/error attempt;
+- the handler observes the experiment in `sending` state before returning bytes;
+- identical same-work requests return `resume-required` with no second server hit;
+- `checkpoint` produces typed interpretation and completion, then strict replay validates the full
+  experiment→claim→attempt→artifact→checkpoint chain;
+- forced release after response capture emits `work.partial`; a second generation sees it first,
+  performs zero duplicate HTTP requests, and completes with the prior evidence;
+- a terminated `prepared` intent is safely rebound without prior target traffic; an actually killed
+  `sending` subprocess remains indeterminate and produces no duplicate request;
+- bookkeeping does not renew, no-progress yields `stalled`, and stale claims send zero requests;
+- provider 429 opens a provider-wide circuit and `ramp-status` blocks launch;
+- ten consecutive baseline assertions produced 10/10 durable attempts and 10/10 completions with zero
+  expired/stalled claims;
+- populated historical SQLite migration preserves experiment/event child foreign keys; strict replay
+  recomputes request identity and rejects artifact/checkpoint provenance corruption;
+- replay specs redact query/header secrets and replay/request artifacts are mode 0600.
+
+Tests use only `ThreadingHTTPServer` on an ephemeral loopback port. No live target traffic is part of
+v3.7 validation. Gate 1 produced 10/10 durable attempts and completions. Gate 2 ran five cycles at
+three boundaries—pre-send prepared failure, forced kill in sending, and post-capture model termination—
+and passed all 15 scenarios without duplicate uncertain I/O. Copied GJ02 and GJ03 ledgers migrated and
+strict-replayed with zero validation/FK errors (553 events/57 work and 46 events/3 work/4 claims).
+
+Remote exactly-once across host process death remains impossible; prepared/sending uncertainty is
+surfaced rather than retried. The next live step is the two-peer shared validation gate, not the
+Solo/isolated/shared superiority benchmark.

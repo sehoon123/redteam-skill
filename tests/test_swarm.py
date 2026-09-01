@@ -9,6 +9,7 @@ import threading
 import tempfile
 import time
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,6 +19,7 @@ KB = ROOT / "pentest" / "kb.py"
 WORKSPACE = ROOT / "pentest" / "workspace.py"
 BENCHMARK = ROOT / "pentest" / "benchmark.py"
 sys.path.insert(0, str(ROOT / "pentest"))
+from replay import validate as validate_replay
 from scheduler import candidate_set_hash, rank_candidates
 
 
@@ -74,14 +76,13 @@ class CliTest(unittest.TestCase):
             self.assertIn("--label '<assigned-label>'", profile)
             self.assertIn("--proxy-policy", profile)
             self.assertIn("PENTEST_PROXY_POLICY", profile)
-            self.assertIn("PENTEST_NETWORK_MODE", profile)
             self.assertIn("engagement_env.sh", profile)
-            self.assertIn("PENTEST_SCRATCH", profile)
-            self.assertIn("proxy-check", profile)
-            self.assertIn("next --agent \"$AGENT\"", profile)
-            self.assertIn("--brief", profile)
+            self.assertIn("peer-start", profile)
+            self.assertIn("exec-http", profile)
+            self.assertIn("checkpoint", profile)
+            self.assertIn("partial_experiments", profile)
             self.assertIn("typed", profile.lower())
-            self.assertIn("When `PENTEST_NETWORK_MODE=proxy`", profile)
+            self.assertIn("never use direct curl", profile)
             self.assertNotIn("--label peer-N", profile)
 
     def test_all_agent_profiles_use_xhigh_or_max(self):
@@ -98,16 +99,17 @@ class CliTest(unittest.TestCase):
     def test_luna_profile_is_one_lease_only(self):
         luna = (ROOT / "agents" / "pentest-peer-luna.md").read_text()
         self.assertIn("## One-shot lifecycle — exactly one lease", luna)
-        self.assertIn("join --label '<assigned-label>' --one-shot", luna)
-        self.assertIn("Never claim a second lease", luna)
+        self.assertIn("peer-start --label '<assigned-label>' --one-shot", luna)
+        self.assertIn("Never call `next` for a second lease", luna)
         self.assertNotIn("## Continuous loop", luna)
         self.assertNotIn("--one-shot", (ROOT / "agents" / "pentest-peer.md").read_text())
         self.assertNotIn("--one-shot", (ROOT / "agents" / "pentest-peer-sonnet.md").read_text())
         self.assertIn("--continuous", (ROOT / "agents" / "pentest-peer.md").read_text())
         self.assertIn("--continuous", (ROOT / "agents" / "pentest-peer-sonnet.md").read_text())
         self.assertNotIn("--continuous", luna)
-        self.assertEqual(1, luna.count('swarm.py next --agent "$AGENT"'))
-        self.assertIn('attempt-add --agent "$AGENT" --work "$WORK"', luna)
+        self.assertNotIn("swarm.py next", luna)
+        self.assertIn("exec-http", luna)
+        self.assertIn("checkpoint", luna)
 
     def test_proxy_auto_agent_cannot_claim_before_scoped_decision(self):
         creator = self.join("creator")
@@ -119,7 +121,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual("auto", joined["proxy_policy"])
         self.run_swarm(
             "task-add", "--agent", creator, "--key", "proxied-work",
-            "--kind", "hypothesis", "--title", "proxied work",
+            "--kind", "analysis", "--title", "proxied work",
         )
         blocked = self.run_swarm(
             "next", "--agent", agent, "--wait", 0, "--quiet", 999,
@@ -305,7 +307,7 @@ class CliTest(unittest.TestCase):
         responder = self.join("causal-responder")
         root = self.run_swarm(
             "task-add", "--agent", creator, "--key", "order-root",
-            "--kind", "hypothesis", "--title", "Order boundary experiment",
+            "--kind", "analysis", "--title", "Order boundary experiment",
             "--workstream", "order-authz", "--diversity-key", "owner-boundary",
             "--information-gain", .8,
         )
@@ -439,12 +441,12 @@ class CliTest(unittest.TestCase):
         request_a = self.run_swarm(
             "request", "--agent", creator, "--workstream", "stream-a",
             "--claim", "A-only objective", "--subjects", '["surface:GET /a"]',
-            "--next-actions", '[{"key":"stream-a-work","title":"A experiment","priority":100}]',
+            "--next-actions", '[{"key":"stream-a-work","title":"A experiment","kind":"experiment","priority":100}]',
         )
         self.run_swarm(
             "request", "--agent", creator, "--workstream", "stream-b",
             "--claim", "B-secret-unrelated", "--subjects", '["surface:GET /b"]',
-            "--next-actions", '[{"key":"stream-b-work","title":"B experiment","priority":90}]',
+            "--next-actions", '[{"key":"stream-b-work","title":"B experiment","kind":"experiment","priority":90}]',
         )
         claimed_a = self.run_swarm(
             "next", "--agent", worker_a, "--wait", 0, "--quiet", 999,
@@ -602,37 +604,69 @@ class CliTest(unittest.TestCase):
         ).fetchone()[0])
         conn.close()
 
-    def test_legacy_cause_allocates_new_trace(self):
+    def test_ungrounded_legacy_cause_cannot_create_hypothesis(self):
         agent = self.join("legacy-trace")
         legacy = self.run_swarm(
             "emit", "--agent", agent, "--kind", "intel",
             "--workstream", "legacy-stream", "--body", "legacy source",
         )
-        typed = self.run_swarm(
+        rejected = self.run_swarm(
             "hypothesize", "--agent", agent, "--claim", "Legacy fact may generalize",
             "--subjects", '["surface:GET /legacy"]',
             "--falsifiers", '["fresh replay differs"]', "--caused-by", legacy["seq"],
+            check=False,
         )
-        self.assertTrue(typed["trace_id"])
+        self.assertIn("requires an observation", rejected.stderr)
         conn = sqlite3.connect(self.db())
-        parent_trace, child_trace = conn.execute(
-            "SELECT trace_id FROM events WHERE seq IN (?,?) ORDER BY seq",
-            (legacy["seq"], typed["seq"]),
-        ).fetchall()
+        self.assertEqual(0, conn.execute(
+            "SELECT COUNT(*) FROM events WHERE kind='causal.hypothesis'"
+        ).fetchone()[0])
         conn.close()
-        self.assertIsNone(parent_trace[0])
-        self.assertEqual(typed["trace_id"], child_trace[0])
-        exported = self.run_swarm(
-            "replay-export", "--strict", "--output", self.home / "board" / "legacy-trace.json",
+
+    def test_bare_credential_does_not_ground_a_hypothesis(self):
+        agent = self.join("credential-grounding")
+        bare = self.run_swarm(
+            "credential-add", "--agent", agent, "--type", "web",
+            "--username", "bare", "--value", "secret",
         )
-        self.assertEqual([], exported["validation_errors"])
+        rejected = self.run_swarm(
+            "hypothesize", "--agent", agent, "--workstream", "credential-stream",
+            "--claim", "Bare credential may imply access", "--subjects", '["work:1"]',
+            "--evidence", json.dumps([f"credential:{bare['id']}"]),
+            "--falsifiers", '["credential has no evidence-backed source"]', check=False,
+        )
+        self.assertIn("requires an observation", rejected.stderr)
+
+        evidence = self.home / "scratch" / "credential-source.txt"
+        evidence.write_text("evidence-backed credential source")
+        finding = self.run_swarm(
+            "finding-add", "--agent", agent, "--title", "Credential source",
+            "--severity", "Info", "--type", "credential", "--endpoint", "GET /login",
+            "--evidence", evidence,
+        )
+        sourced = self.run_swarm(
+            "credential-add", "--agent", agent, "--type", "web",
+            "--username", "sourced", "--value", "secret", "--finding", finding["id"],
+        )
+        accepted = self.run_swarm(
+            "hypothesize", "--agent", agent, "--workstream", "credential-stream",
+            "--claim", "Evidence-backed credential may enable a bounded replay",
+            "--subjects", '["finding:FIND-0001"]',
+            "--evidence", json.dumps([f"credential:{sourced['id']}"]),
+            "--falsifiers", '["credential is rejected"]',
+        )
+        self.assertEqual("hypothesis", accepted["type"])
+        replay = self.run_swarm(
+            "replay-export", "--strict", "--output", self.home / "board" / "credential.json",
+        )
+        self.assertEqual([], replay["validation_errors"])
 
     def test_owned_work_cannot_emit_into_foreign_workstream(self):
         creator = self.join("stream-owner")
         worker = self.join("stream-worker")
         self.run_swarm(
             "task-add", "--agent", creator, "--key", "stream-bound",
-            "--kind", "hypothesis", "--title", "stream bound", "--workstream", "stream-a",
+            "--kind", "analysis", "--title", "stream bound", "--workstream", "stream-a",
         )
         claimed = self.run_swarm("next", "--agent", worker, "--wait", 0, "--quiet", 999)
         rejected = self.run_swarm(
@@ -649,15 +683,21 @@ class CliTest(unittest.TestCase):
 
     def test_decision_cannot_supersede_unrelated_trace(self):
         agent = self.join("decision-scope")
+        evidence_path = self.home / "scratch" / "decision-grounding.txt"
+        evidence_path.write_text("observed response")
+        evidence = self.run_swarm(
+            "artifact-add", "--agent", agent, "--path", evidence_path,
+        )
+        evidence_ref = json.dumps([f"artifact:{evidence['id']}"])
         first = self.run_swarm(
             "hypothesize", "--agent", agent, "--workstream", "decision-stream",
             "--claim", "First hypothesis", "--subjects", '["surface:GET /x"]',
-            "--falsifiers", '["first false"]',
+            "--evidence", evidence_ref, "--falsifiers", '["first false"]',
         )
         second = self.run_swarm(
             "hypothesize", "--agent", agent, "--workstream", "decision-stream",
             "--claim", "Independent hypothesis", "--subjects", '["surface:GET /x"]',
-            "--falsifiers", '["second false"]',
+            "--evidence", evidence_ref, "--falsifiers", '["second false"]',
         )
         rejected = self.run_swarm(
             "decide", "--agent", agent, "--claim", "Invalid cross-trace decision",
@@ -998,7 +1038,7 @@ class CliTest(unittest.TestCase):
         self.run_swarm(
             "request", "--agent", agent, "--workstream", "replay-stream",
             "--claim", "Generate deterministic work", "--subjects", '["surface:GET /replay"]',
-            "--next-actions", '[{"key":"replay-work","title":"Replay work"}]',
+            "--next-actions", '[{"key":"replay-work","title":"Replay work","kind":"experiment"}]',
         )
         first_path = self.home / "board" / "replay-one.json"
         second_path = self.home / "board" / "replay-two.json"
@@ -1045,13 +1085,14 @@ class CliTest(unittest.TestCase):
         luna = joined["agent"]
         self.assertEqual(1, joined["max_claims"])
         duplicate = self.run_swarm(
-            "join", "--label", "luna-slot-1.fresh-1", "--no-proxy-required", check=False,
+            "join", "--label", "luna-slot-1.fresh-1", "--no-proxy-required",
         )
-        self.assertIn("agent label already joined", duplicate.stderr)
+        self.assertTrue(duplicate["resumed"])
+        self.assertEqual(luna, duplicate["agent"])
         for key in ("first", "second"):
             self.run_swarm(
                 "task-add", "--agent", creator, "--key", key,
-                "--kind", "hypothesis", "--title", key,
+                "--kind", "analysis", "--title", key,
             )
         first = self.run_swarm("next", "--agent", luna, "--wait", 0, "--quiet", 999)
         self.assertEqual("claimed", first["status"])
@@ -1085,7 +1126,7 @@ class CliTest(unittest.TestCase):
         for key in ("refused-work", "other-work"):
             self.run_swarm(
                 "task-add", "--agent", creator, "--key", key,
-                "--kind", "hypothesis", "--title", key,
+                "--kind", "analysis", "--title", key,
             )
         claimed = self.run_swarm(
             "next", "--agent", refused, "--wait", 0, "--quiet", 999,
@@ -1134,7 +1175,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual("failed", states["refused-work"])
         self.assertEqual("ready", states["other-work"])
 
-    def test_canonical_workflow_rolls_replacements_without_rerouting_models(self):
+    def test_canonical_workflow_uses_provider_aware_elastic_ramp(self):
         script = (ROOT / "workflows" / "cohort.js").read_text()
         self.assertIn('runs.run("cohort-mode"', script)
         self.assertIn('agent: "pentest-cohort-selector"', script)
@@ -1143,33 +1184,31 @@ class CliTest(unittest.TestCase):
         self.assertIn("thinking: xhigh", selector)
         self.assertIn("thinking: xhigh", recorder)
         self.assertIn('cohortNumber === 1 ? "pentest-peer-sonnet" : "pentest-peer"', script)
-        self.assertIn("maxClaudeGenerations = 2", script)
-        self.assertIn("maxLunaGenerations = 7", script)
-        self.assertIn("maxConsecutiveFailures = 2", script)
-        self.assertIn("= 63 runs", script)
-        self.assertIn("Promise.all", script)
+        self.assertIn("providerKey", script)
+        self.assertIn("function rampGate", script)
+        self.assertIn("ramp-status", script)
+        self.assertIn("var firstPromise = runs.run", script)
+        self.assertIn("var secondPromise = runs.run", script)
+        self.assertIn("await Promise.race", script)
+        self.assertIn("thirdResult = await runs.run", script)
         self.assertNotIn("runs.lanes", script)
         self.assertNotIn('resume: "previous"', script)
-        self.assertIn("function runClaudeSlot", script)
-        self.assertEqual(2, script.count("acceptance: false"))
-        self.assertIn("timeoutMs: 1800000", script)
-        self.assertIn("function runLunaSlot", script)
+        self.assertEqual(3, script.count("acceptance: false"))
+        self.assertIn("timeoutMs: 600000", script)
+        self.assertIn('var providerKey = "claude"', script)
+        self.assertIn("status --provider", script)
         self.assertIn("function recordTerminal", script)
         self.assertIn('agent: "pentest-run-recorder"', script)
         self.assertIn("gate: verifyCommand", script)
         self.assertIn("run-result-get", script)
-        self.assertIn("Run exactly this local command", script)
-        self.assertIn('agent: "pentest-peer-luna"', script)
-        self.assertIn('context: "fresh"', script)
-        self.assertIn("return runClaudeSlot(slot, generation + 1, failures)", script)
-        self.assertIn("return runLunaSlot(slot, generation + 1, 0)", script)
-        self.assertIn("return runLunaSlot(slot, generation + 1, failures)", script)
-        self.assertIn("receipt.recorded === true", script)
-        self.assertIn("receipt.category === category", script)
         self.assertIn("function opensCircuit", script)
         self.assertIn("too many requests", script)
         self.assertIn('category === "budget"', script)
-        self.assertIn('verdict: { type: "string", enum: ["complete", "blocked"] }', script)
+        self.assertNotIn('agent: "pentest-peer-luna"', script)
+        self.assertNotIn("generation + 1", script)
+        self.assertIn("peer-start", script)
+        self.assertIn("exec-http", script)
+        self.assertIn("checkpoint", script)
 
     def test_skill_has_only_canonical_launch_entrypoints(self):
         skill = (ROOT / "SKILL.md").read_text()
@@ -1192,10 +1231,12 @@ class CliTest(unittest.TestCase):
         self.assertIn("aiohttp", proxy_doc)
         self.assertIn("Playwright", proxy_doc)
         self.assertIn("fail-open by default", proxy_doc)
+        self.assertIn("exec-http", proxy_doc)
+        self.assertIn("Direct ad-hoc target traffic", proxy_doc)
         self.assertIn("PENTEST_NETWORK_MODE", proxy_env)
         self.assertIn("unset HTTP_PROXY", proxy_env)
-        self.assertIn("globalConcurrencyLimit: 8", skill)
-        self.assertIn("maxSubagentSpawnsPerRun: 63", skill)
+        self.assertIn("globalConcurrencyLimit: 3", skill)
+        self.assertIn("maxSubagentSpawnsPerRun: 9", skill)
         self.assertNotIn("workflows/cohort-sonnet.js", skill)
         self.assertNotIn("workflows/cohort-opus.js", skill)
         self.assertNotIn("workflowScript: `", skill)
@@ -1237,6 +1278,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual("site-example.test-p443\n", (runtime / "active-engagement").read_text())
         scope_text = Path(created["scope"]).read_text()
         self.assertIn('host: "example.test"', scope_text)
+        self.assertIn("scheme: https", scope_text)
         self.assertIn("ports: [443]", scope_text)
 
         repeated = json.loads(subprocess.check_output(command, env=env, text=True))
@@ -1267,6 +1309,27 @@ class CliTest(unittest.TestCase):
         switched = subprocess.run(other, env=env, text=True, capture_output=True)
         self.assertEqual(0, switched.returncode, switched.stderr)
         self.assertEqual("site-other.test-p443\n", (runtime / "active-engagement").read_text())
+
+        nonstandard = subprocess.run(
+            ["python3", str(WORKSPACE), "ensure", "--target", "http://plain.test:8081",
+             "--authorization", "Operator explicitly authorized this unit-test assessment."],
+            env=env, text=True, capture_output=True,
+        )
+        self.assertEqual(0, nonstandard.returncode, nonstandard.stderr)
+        plain = json.loads(nonstandard.stdout)
+        self.assertEqual("http", plain["scheme"])
+        self.assertIn("scheme: http", Path(plain["scope"]).read_text())
+        self.assertEqual(0, subprocess.run(
+            ["python3", str(SWARM), "init"], env=env, text=True, capture_output=True,
+        ).returncode)
+        boot = json.loads(subprocess.check_output(
+            ["python3", str(SWARM), "peer-start", "--label", "plain-bootstrap",
+             "--one-shot", "--proxy-policy", "off"], env=env, text=True,
+        ))
+        self.assertEqual("http://plain.test:8081/", boot["claim"]["payload"]["url"])
+        subprocess.check_output(
+            ["python3", str(SWARM), "leave", "--agent", boot["agent"]], env=env, text=True,
+        )
 
         pending = subprocess.run(
             ["python3", str(WORKSPACE), "ensure", "--target", "https://third.test",
@@ -1338,14 +1401,21 @@ class CliTest(unittest.TestCase):
         status = self.run_swarm("status")
         self.assertEqual("open", status["status"])
         self.assertEqual(1, status["cohort"]["number"])
-        self.assertEqual(8, status["cohort"]["target_peers"])
+        self.assertEqual(3, status["cohort"]["target_peers"])
 
-    def test_empty_engagement_is_not_quiescent(self):
+    def test_empty_engagement_materializes_grounded_bootstrap_work(self):
         agent = self.join("peer")
         result = self.run_swarm(
             "next", "--agent", agent, "--wait", 0, "--quiet", 0,
         )
-        self.assertEqual("wait", result["status"])
+        self.assertEqual("claimed", result["status"])
+        self.assertEqual("experiment", result["kind"])
+        self.assertTrue(result["key"].endswith(":reachability"))
+        conn = sqlite3.connect(self.db())
+        self.assertEqual(2, conn.execute(
+            "SELECT COUNT(*) FROM work WHERE work_key LIKE 'baseline:%'"
+        ).fetchone()[0])
+        conn.close()
 
     def test_bounded_dossier_and_collaboration_inbox(self):
         joined = self.run_swarm(
@@ -1396,8 +1466,20 @@ class CliTest(unittest.TestCase):
         duplicate = self.run_swarm(
             "run-result", "--label", "telemetry-peer", "--run-id", "telemetry-run",
             "--provider", "test/model", "--status", "failed", "--category", "provider-error",
+            "--detail", "earlier provider response was 429 too many requests",
         )
         self.assertTrue(duplicate["duplicate"])
+        circuit = self.run_swarm("provider-status", "--provider", "test/model")
+        self.assertTrue(circuit["blocked"])
+        opened_until = circuit["opened_until"]
+        self.run_swarm(
+            "run-result", "--label", "telemetry-peer", "--run-id", "telemetry-run",
+            "--provider", "test/model", "--status", "failed", "--category", "provider-error",
+            "--detail", "429 too many requests",
+        )
+        self.assertEqual(opened_until, self.run_swarm(
+            "provider-status", "--provider", "test/model"
+        )["opened_until"])
         self.assertEqual(100, self.run_swarm(
             "run-result-get", "--run-id", "telemetry-run",
         )["input_tokens"])
@@ -1420,7 +1502,7 @@ class CliTest(unittest.TestCase):
         self.join("claude-1.gen-1")
         self.run_swarm(
             "task-add", "--agent", luna, "--key", "recover-me",
-            "--kind", "hypothesis", "--title", "recover me",
+            "--kind", "analysis", "--title", "recover me",
         )
         claimed = self.run_swarm(
             "next", "--agent", luna, "--wait", 0, "--quiet", 999,
@@ -1461,6 +1543,9 @@ class CliTest(unittest.TestCase):
         self.assertEqual(1, metrics["run_results"]["budget"])
         self.assertEqual(1, metrics["run_results"]["provider-error"])
         self.assertNotIn("completed", metrics["run_results"])
+        self.assertTrue(self.run_swarm(
+            "provider-status", "--provider", "claude"
+        )["blocked"])
         second = self.run_cli(POSTFLIGHT, status)
         self.assertTrue(all(r["duplicate"] for r in second["recorded"]))
 
@@ -1469,7 +1554,7 @@ class CliTest(unittest.TestCase):
         agents = [self.join(f"peer-{i}") for i in range(12)]
         self.run_swarm(
             "task-add", "--agent", owner, "--key", "GET:/x:server-input",
-            "--kind", "hypothesis", "--title", "test x",
+            "--kind", "analysis", "--title", "test x",
         )
 
         def claim(agent):
@@ -1578,13 +1663,13 @@ class CliTest(unittest.TestCase):
         )
         self.assertNotEqual("claimed", result["status"])
 
-    def test_ledger_activity_renews_lease(self):
+    def test_bookkeeping_activity_does_not_renew_lease(self):
         creator = self.join("creator")
         owner = self.join("owner")
         other = self.join("other")
         self.run_swarm(
             "task-add", "--agent", creator, "--key", "renew-me",
-            "--kind", "hypothesis", "--title", "lease renewal",
+            "--kind", "analysis", "--title", "lease renewal",
         )
         claimed = self.run_swarm(
             "next", "--agent", owner, "--wait", 0, "--lease", 1, "--quiet", 999,
@@ -1596,7 +1681,8 @@ class CliTest(unittest.TestCase):
         result = self.run_swarm(
             "next", "--agent", other, "--wait", 0, "--quiet", 999,
         )
-        self.assertNotEqual("claimed", result["status"])
+        self.assertEqual("claimed", result["status"])
+        self.assertEqual(claimed["id"], result["id"])
 
     def test_independent_finding_attestation(self):
         finder = self.join("finder")
@@ -1794,10 +1880,10 @@ class CliTest(unittest.TestCase):
 
     def test_cohorts_preserve_work_handoffs_and_detect_saturation(self):
         first = self.join("first")
-        for i in range(7):
+        for i in range(2):
             self.join(f"first-cohort-peer-{i}")
         self.run_swarm(
-            "task-add", "--agent", first, "--key", "carry-me", "--kind", "hypothesis",
+            "task-add", "--agent", first, "--key", "carry-me", "--kind", "analysis",
             "--title", "Continue this in a fresh context", "--priority", 90,
         )
         claimed = self.run_swarm("next", "--agent", first, "--wait", 0, "--quiet", 999)
@@ -1806,10 +1892,10 @@ class CliTest(unittest.TestCase):
         self.assertEqual(1, ended["remaining_work"])
         self.assertFalse(ended["saturation"]["eligible"])
 
-        started = self.run_swarm("cohort-start", "--label", "fresh-2", "--peers", 8)
+        started = self.run_swarm("cohort-start", "--label", "fresh-2", "--peers", 3)
         self.assertEqual(2, started["number"])
         second = self.join("second")
-        for i in range(7):
+        for i in range(2):
             self.join(f"second-cohort-peer-{i}")
         dossier = self.run_swarm("dossier")
         self.assertEqual("resume carry-me from checkpoint A", dossier["completed_cohorts"][0]["summary"]["handoffs"][0]["summary"])
@@ -1922,7 +2008,8 @@ class CliTest(unittest.TestCase):
         self.assertIn("claim_id", work_artifact_columns)
         self.assertEqual(
             {"id", "engagement_id", "work_id", "actor_id", "generation", "claimed_at",
-             "lease_until", "ended_at", "outcome", "claim_event"}, claim_columns,
+             "lease_until", "lease_seconds", "no_progress_seconds", "last_progress_at",
+             "brief_returned_at", "ended_at", "outcome", "claim_event"}, claim_columns,
         )
         self.assertTrue({
             "started_at", "ended_at", "input_tokens", "output_tokens", "cache_read_tokens",
@@ -1932,9 +2019,11 @@ class CliTest(unittest.TestCase):
         self.assertIn("exclusion_reason", scheduler_candidate_columns)
         self.assertEqual(1, dossier["active_cohort"]["number"])
         self.assertEqual(1, dossier["active_cohort"]["joined_peers"])
-        self.assertEqual("wait", self.run_swarm(
+        migrated_next = self.run_swarm(
             "next", "--agent", agent, "--wait", 0, "--quiet", 999,
-        )["status"])
+        )
+        self.assertEqual("claimed", migrated_next["status"])
+        self.assertEqual("experiment", migrated_next["kind"])
 
     def test_scope_change_fails_closed(self):
         (self.home / "scope.yaml").write_text(
@@ -2027,6 +2116,468 @@ class CliTest(unittest.TestCase):
         multi = self.run_cli(KB, "search", "prototype pollution")
         self.assertEqual("research/board/recon-baseline.jsonl:2", multi[0]["origin"])
         self.assertEqual([], self.run_cli(KB, "search", "SAFEGUARD_META"))
+
+
+class HttpExecutionTest(unittest.TestCase):
+    class Handler(BaseHTTPRequestHandler):
+        def _respond(self, body=True):
+            self.server.requests.append({
+                "path": self.path, "headers": dict(self.headers), "method": self.command,
+            })
+            conn = sqlite3.connect(self.server.db_path)
+            self.server.saw_sending.append(conn.execute(
+                "SELECT COUNT(*) FROM experiments WHERE status='sending'"
+            ).fetchone()[0] > 0)
+            conn.close()
+            if self.path.startswith("/redirect"):
+                self.send_response(302)
+                self.send_header("Location", "http://outside.invalid/")
+                self.end_headers()
+                return
+            if self.path.startswith("/slow"):
+                time.sleep(.3)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            if self.path.startswith("/trickle"):
+                for _ in range(20):
+                    try:
+                        self.wfile.write(b"x")
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError):
+                        break
+                    time.sleep(.03)
+                return
+            if body:
+                try:
+                    self.wfile.write(b"atomic-response")
+                except BrokenPipeError:
+                    pass
+
+        def do_GET(self):
+            self._respond()
+
+        def do_HEAD(self):
+            self._respond(False)
+
+        def log_message(self, *_):
+            pass
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name)
+        for name in ("state", "scratch", "findings", "board", "memory", "research/board"):
+            (self.home / name).mkdir(parents=True, exist_ok=True)
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), self.Handler)
+        self.server.requests = []
+        self.server.saw_sending = []
+        port = self.server.server_port
+        (self.home / "scope.yaml").write_text(
+            f'engagement_id: HTTP-TEST\nauthorization: "unit test"\ntargets:\n'
+            f'  - host: 127.0.0.1\n    scheme: http\n    ports: [{port}]\n'
+        )
+        self.env = {**os.environ, "PENTEST_HOME": str(self.home)}
+        self.run_swarm("init")
+        self.server.db_path = self.home / "state" / "HTTP-TEST.sqlite3"
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.url = f"http://127.0.0.1:{port}"
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(2)
+        self.tmp.cleanup()
+
+    def run_swarm(self, *args, check=True):
+        proc = subprocess.run(
+            ["python3", str(SWARM), *map(str, args)], env=self.env,
+            text=True, capture_output=True,
+        )
+        if not check:
+            return proc
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        return json.loads(proc.stdout)
+
+    def start(self, label="http-peer", lease=30, no_progress=20):
+        return self.run_swarm(
+            "peer-start", "--label", label, "--continuous", "--proxy-policy", "off",
+            "--lease", lease, "--no-progress", no_progress,
+        )
+
+    def execute(self, started, path="/", method="GET", check="baseline-reachability",
+                timeout=2):
+        return self.run_swarm(
+            "exec-http", "--agent", started["agent"], "--work", started["claim"]["id"],
+            "--method", method, "--url", self.url + path, "--check", check,
+            "--timeout", timeout, "--expected", '{"status":[200,302]}',
+        )
+
+    def checkpoint(self, started, experiment, **extra):
+        args = [
+            "checkpoint", "--agent", started["agent"], "--work", started["claim"]["id"],
+            "--experiment", experiment["experiment_id"], "--message-type", "observation",
+            "--claim", "host runner captured a bounded response", "--finish", "done",
+        ]
+        for key, value in extra.items():
+            args.extend(("--" + key.replace("_", "-"), value))
+        return self.run_swarm(*args)
+
+    def test_peer_start_recovers_same_active_label(self):
+        first = self.start("recoverable-start")
+        recovered = self.start("recoverable-start")
+        self.assertTrue(recovered["resumed"])
+        self.assertEqual(first["agent"], recovered["agent"])
+        self.assertEqual(first["claim"]["claim_id"], recovered["claim"]["claim_id"])
+        conn = sqlite3.connect(self.server.db_path)
+        self.assertEqual(1, conn.execute("SELECT COUNT(*) FROM agents").fetchone()[0])
+        conn.close()
+
+    def test_exec_http_is_fenced_durable_idempotent_and_checkpointed(self):
+        started = self.start()
+        executed = self.execute(started, "/root")
+        self.assertEqual("executed", executed["status"])
+        self.assertEqual(200, executed["status_code"])
+        self.assertEqual(2, len(executed["artifact_refs"]))
+        self.assertTrue(all(self.server.saw_sending))
+        headers = {key.lower(): value for key, value in self.server.requests[0]["headers"].items()}
+        self.assertEqual(started["agent"], headers["x-redteam-agent"])
+        self.assertEqual(str(started["claim"]["claim_id"]), headers["x-redteam-claim"])
+        self.assertEqual(str(executed["experiment_id"]), headers["x-redteam-experiment"])
+        before = len(self.server.requests)
+        duplicate = self.execute(started, "/root")
+        self.assertEqual("resume-required", duplicate["status"])
+        self.assertEqual(before, len(self.server.requests))
+        finished = self.checkpoint(started, executed)
+        self.assertEqual("done", finished["state"])
+        replay = self.run_swarm(
+            "replay-export", "--strict", "--output", self.home / "board" / "http.json",
+        )
+        self.assertEqual([], replay["validation_errors"])
+        metrics = self.run_swarm("metrics")["execution"]
+        self.assertEqual(1, metrics["durable_assertions"])
+        self.assertEqual(1, metrics["completed_assertions"])
+
+    def test_replay_redacts_secrets_and_rejects_provenance_corruption(self):
+        started = self.start("secret-peer")
+        secret = "unit-secret-token"
+        executed = self.run_swarm(
+            "exec-http", "--agent", started["agent"], "--work", started["claim"]["id"],
+            "--url", self.url + "/secret?token=" + secret,
+            "--check", "baseline-reachability", "--timeout", 2,
+            "--headers", json.dumps({"Authorization": "Bearer " + secret,
+                                     "Cookie": "session=" + secret}),
+        )
+        self.checkpoint(started, executed)
+        replay_path = self.home / "board" / "secret-replay.json"
+        self.run_swarm("replay-export", "--strict", "--output", replay_path)
+        replay = json.loads(replay_path.read_text())
+        self.assertNotIn(secret, replay_path.read_text())
+        self.assertEqual(0o600, replay_path.stat().st_mode & 0o777)
+        experiment = replay["experiments"][0]
+        self.assertFalse("?" in experiment["spec"]["url"])
+        request_artifact = next(
+            item for item in replay["artifacts"]
+            if item["id"] == experiment["request_artifact_id"]
+        )
+        raw_request = self.home / request_artifact["path"]
+        self.assertIn(secret, raw_request.read_text())
+        self.assertEqual(0o600, raw_request.stat().st_mode & 0o777)
+
+        bad_fingerprint = json.loads(json.dumps(replay))
+        bad_fingerprint["experiments"][0]["spec"]["headers"][0]["value_sha256"] = "0" * 64
+        self.assertTrue(any("invalid request fingerprint" in error
+                            for error in validate_replay(bad_fingerprint)))
+
+        bad_link = json.loads(json.dumps(replay))
+        response_id = bad_link["experiments"][0]["response_artifact_id"]
+        bad_link["work_artifacts"] = [
+            item for item in bad_link["work_artifacts"] if item["artifact_id"] != response_id
+        ]
+        self.assertTrue(any("response_artifact_id provenance" in error
+                            for error in validate_replay(bad_link)))
+
+        bad_checkpoint = json.loads(json.dumps(replay))
+        checkpoint_id = bad_checkpoint["experiments"][0]["checkpoint_event_id"]
+        checkpoint = next(item for item in bad_checkpoint["events"] if item["seq"] == checkpoint_id)
+        missing = f"artifact:{response_id}"
+        checkpoint["evidence_refs"].remove(missing)
+        checkpoint["body"]["evidence_refs"].remove(missing)
+        self.assertTrue(any("checkpoint omits provenance" in error
+                            for error in validate_replay(bad_checkpoint)))
+
+    def test_scope_header_redirect_timeout_and_expired_claim_fail_closed(self):
+        started = self.start()
+        outside = self.run_swarm(
+            "exec-http", "--agent", started["agent"], "--work", started["claim"]["id"],
+            "--url", "http://example.invalid/", "--check", "baseline", check=False,
+        )
+        self.assertIn("outside scope", outside.stderr)
+        forged = self.run_swarm(
+            "exec-http", "--agent", started["agent"], "--work", started["claim"]["id"],
+            "--url", self.url + "/", "--check", "baseline", "--headers",
+            '{"X-Redteam-Claim":"forged"}', check=False,
+        )
+        self.assertIn("host-owned", forged.stderr)
+        for forbidden_headers in ('{"Host":"outside.invalid"}',
+                                  '{"Transfer-Encoding":"chunked"}',
+                                  '{"Content-Length":"999"}'):
+            rejected = self.run_swarm(
+                "exec-http", "--agent", started["agent"],
+                "--work", started["claim"]["id"], "--url", self.url + "/",
+                "--check", "baseline", "--headers", forbidden_headers, check=False,
+            )
+            self.assertIn("host-owned", rejected.stderr)
+        redirect = self.execute(started, "/redirect")
+        self.assertEqual(302, redirect["status_code"])
+        self.assertEqual(1, len(self.server.requests))
+
+        other = self.start("timeout-peer")
+        timed = self.execute(other, "/slow", timeout=.1)
+        self.assertEqual("error", timed["experiment_status"])
+        trickle_peer = self.start("trickle-peer")
+        trickled = self.execute(trickle_peer, "/trickle", timeout=.12)
+        self.assertEqual("error", trickled["experiment_status"])
+        self.assertLess(trickled["elapsed_ms"], 300)
+        conn = sqlite3.connect(self.server.db_path)
+        conn.execute("UPDATE work_claims SET lease_until=0 WHERE id=?",
+                     (started["claim"]["claim_id"],))
+        conn.commit(); conn.close()
+        count = len(self.server.requests)
+        fenced = self.run_swarm(
+            "exec-http", "--agent", started["agent"], "--work", started["claim"]["id"],
+            "--url", self.url + "/late", "--check", "baseline", check=False,
+        )
+        self.assertIn("claim-expired", fenced.stderr)
+        self.assertEqual(count, len(self.server.requests))
+
+    def test_prepared_experiment_is_safely_rebound_after_termination(self):
+        first = self.start("prepared-first")
+        scratch = self.home / "scratch"
+        scratch.chmod(0o500)
+        try:
+            failed = self.run_swarm(
+                "exec-http", "--agent", first["agent"], "--work", first["claim"]["id"],
+                "--url", self.url + "/prepared", "--check", "baseline-reachability",
+                "--timeout", 2, check=False,
+            )
+        finally:
+            scratch.chmod(0o700)
+        self.assertNotEqual(0, failed.returncode)
+        self.assertEqual(0, len(self.server.requests))
+        conn = sqlite3.connect(self.server.db_path)
+        self.assertEqual("prepared", conn.execute(
+            "SELECT status FROM experiments"
+        ).fetchone()[0])
+        conn.close()
+        self.run_swarm(
+            "fail", "--agent", first["agent"], "--work", first["claim"]["id"],
+            "--summary", "host process terminated before send",
+        )
+        second = self.start("prepared-second")
+        self.assertEqual("prepared", second["claim"]["brief"]["partial_experiments"][0]["status"])
+        executed = self.execute(second, "/prepared")
+        self.assertEqual("executed", executed["status"])
+        self.assertEqual(1, len(self.server.requests))
+        self.checkpoint(second, executed)
+        replay = self.run_swarm(
+            "replay-export", "--strict", "--output", self.home / "board" / "prepared.json",
+        )
+        self.assertEqual([], replay["validation_errors"])
+
+    def test_forced_termination_preserves_sending_uncertainty(self):
+        first = self.start("killed-sender")
+        command = [
+            "python3", str(SWARM), "exec-http", "--agent", first["agent"],
+            "--work", str(first["claim"]["id"]), "--url", self.url + "/slow",
+            "--check", "baseline-reachability", "--timeout", "2",
+        ]
+        process = subprocess.Popen(command, env=self.env, text=True,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        deadline = time.time() + 3
+        saw_sending = False
+        while time.time() < deadline:
+            conn = sqlite3.connect(self.server.db_path)
+            row = conn.execute("SELECT status FROM experiments ORDER BY id DESC LIMIT 1").fetchone()
+            conn.close()
+            if row and row[0] == "sending":
+                saw_sending = True
+                break
+            time.sleep(.01)
+        self.assertTrue(saw_sending)
+        process.terminate()
+        try:
+            process.communicate(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate(timeout=2)
+        request_deadline = time.time() + 1
+        while not self.server.requests and time.time() < request_deadline:
+            time.sleep(.01)
+        before = len(self.server.requests)
+        self.assertLessEqual(before, 1)
+        self.run_swarm(
+            "fail", "--agent", first["agent"], "--work", first["claim"]["id"],
+            "--summary", "host process was forcibly terminated after send fencing",
+        )
+        second = self.start("killed-takeover")
+        uncertain = second["claim"]["brief"]["partial_experiments"][0]
+        self.assertEqual("sending", uncertain["status"])
+        duplicate = self.execute(second, "/slow")
+        self.assertEqual("indeterminate", duplicate["status"])
+        self.assertEqual(before, len(self.server.requests))
+        self.run_swarm(
+            "fail", "--agent", second["agent"], "--work", second["claim"]["id"],
+            "--summary", "indeterminate send requires operator resolution",
+        )
+        replay = self.run_swarm(
+            "replay-export", "--strict", "--output", self.home / "board" / "killed.json",
+        )
+        self.assertEqual([], replay["validation_errors"])
+
+    def test_partial_takeover_reuses_response_without_second_request(self):
+        first = self.start("first")
+        executed = self.execute(first, "/takeover")
+        self.run_swarm(
+            "fail", "--agent", first["agent"], "--work", first["claim"]["id"],
+            "--summary", "model terminated after response capture",
+        )
+        second = self.run_swarm(
+            "peer-start", "--label", "second", "--continuous", "--proxy-policy", "off",
+            "--lease", 30, "--no-progress", 20,
+        )
+        self.assertEqual(first["claim"]["id"], second["claim"]["id"])
+        partial = second["claim"]["brief"]["partial_experiments"]
+        self.assertEqual(executed["experiment_id"], partial[0]["id"])
+        before = len(self.server.requests)
+        resumed = self.run_swarm(
+            "exec-http", "--agent", second["agent"], "--work", second["claim"]["id"],
+            "--method", "GET", "--url", self.url + "/takeover",
+            "--check", "baseline-reachability", "--timeout", 2,
+        )
+        self.assertEqual("resume-required", resumed["status"])
+        self.assertEqual(before, len(self.server.requests))
+        self.checkpoint(second, resumed)
+        conn = sqlite3.connect(self.server.db_path)
+        self.assertEqual(1, conn.execute(
+            "SELECT COUNT(*) FROM events WHERE kind='work.partial'"
+        ).fetchone()[0])
+        self.assertEqual([(1, "released"), (2, "done")], conn.execute(
+            "SELECT generation,outcome FROM work_claims WHERE work_id=? ORDER BY generation",
+            (first["claim"]["id"],),
+        ).fetchall())
+        conn.close()
+        replay = self.run_swarm(
+            "replay-export", "--strict", "--output", self.home / "board" / "takeover.json",
+        )
+        self.assertEqual([], replay["validation_errors"])
+
+    def test_no_progress_stalls_and_provider_429_opens_global_circuit(self):
+        first = self.start("stalled", lease=3, no_progress=1)
+        time.sleep(1.1)
+        before = len(self.server.requests)
+        stale = self.run_swarm(
+            "exec-http", "--agent", first["agent"], "--work", first["claim"]["id"],
+            "--url", self.url + "/stale", "--check", "baseline", "--timeout", .2,
+            check=False,
+        )
+        self.assertIn("claim-stalled", stale.stderr)
+        self.assertEqual(before, len(self.server.requests))
+        other = self.start("takeover", lease=30, no_progress=20)
+        self.assertEqual(first["claim"]["id"], other["claim"]["id"])
+        conn = sqlite3.connect(self.server.db_path)
+        self.assertEqual("stalled", conn.execute(
+            "SELECT outcome FROM work_claims WHERE id=?", (first["claim"]["claim_id"],)
+        ).fetchone()[0])
+        conn.close()
+        self.run_swarm(
+            "run-result", "--label", "stalled", "--run-id", "provider-429",
+            "--provider", "claude", "--status", "failed",
+            "--category", "timeout", "--detail", "429 too many requests",
+        )
+        status = self.run_swarm("provider-status", "--provider", "claude")
+        self.assertTrue(status["blocked"])
+        self.assertTrue(self.run_swarm(
+            "status", "--provider", "claude"
+        )["provider"]["blocked"])
+        ramp = self.run_swarm(
+            "ramp-status", "--provider", "claude", "--stage", 2,
+        )
+        self.assertTrue(ramp["blocked"])
+        self.assertFalse(ramp["ready"])
+
+    def test_populated_v36_claim_table_migrates_with_child_foreign_keys(self):
+        started = self.start("migration-peer")
+        executed = self.execute(started, "/migration")
+        conn = sqlite3.connect(self.server.db_path, isolation_level=None)
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("PRAGMA legacy_alter_table=ON")
+        conn.executescript("""
+            BEGIN IMMEDIATE;
+            ALTER TABLE work_claims RENAME TO work_claims_v37;
+            CREATE TABLE work_claims (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                engagement_id TEXT NOT NULL REFERENCES engagements(id),
+                work_id INTEGER NOT NULL REFERENCES work(id),
+                actor_id TEXT NOT NULL REFERENCES agents(id),
+                generation INTEGER NOT NULL,
+                claimed_at REAL NOT NULL,
+                lease_until REAL NOT NULL,
+                lease_seconds REAL,
+                no_progress_seconds REAL,
+                last_progress_at REAL,
+                brief_returned_at REAL,
+                ended_at REAL,
+                outcome TEXT CHECK(outcome IS NULL OR outcome IN (
+                    'done','released','expired','failed','refusal','interrupted','superseded'
+                )),
+                claim_event INTEGER REFERENCES events(seq),
+                UNIQUE(work_id,generation)
+            );
+            INSERT INTO work_claims SELECT * FROM work_claims_v37;
+            DROP TABLE work_claims_v37;
+            COMMIT;
+        """)
+        conn.close()
+
+        self.run_swarm("dossier")
+        migrated = sqlite3.connect(self.server.db_path)
+        sql = migrated.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='work_claims'"
+        ).fetchone()[0]
+        self.assertIn("'stalled'", sql)
+        self.assertEqual([], migrated.execute("PRAGMA foreign_key_check").fetchall())
+        self.assertEqual(started["claim"]["claim_id"], migrated.execute(
+            "SELECT claim_id FROM experiments WHERE id=?", (executed["experiment_id"],)
+        ).fetchone()[0])
+        migrated.close()
+        replay = self.run_swarm(
+            "replay-export", "--strict", "--output", self.home / "board" / "migrated.json",
+        )
+        self.assertEqual([], replay["validation_errors"])
+
+    def test_ten_atomic_baselines_all_produce_attempts_and_completion(self):
+        started = self.start("reliability")
+        current = started
+        for index in range(10):
+            claim = current["claim"]
+            check = claim["payload"].get("check", "baseline-reachability")
+            method = claim["payload"].get("method") or claim["payload"].get(
+                "surface", "GET /"
+            ).split()[0]
+            executed = self.execute(current, "/", method=method, check=check)
+            self.checkpoint(current, executed)
+            if index < 9:
+                next_claim = self.run_swarm(
+                    "next", "--agent", started["agent"], "--wait", 0, "--quiet", 999,
+                    "--brief", "--lease", 30, "--no-progress", 20,
+                )
+                current = {"agent": started["agent"], "claim": next_claim}
+        metrics = self.run_swarm("metrics")
+        self.assertEqual(10, metrics["execution"]["durable_assertions"])
+        self.assertEqual(10, metrics["execution"]["completed_assertions"])
+        self.assertEqual(0, metrics["claims"]["expired_rate"])
+        self.assertEqual(0, metrics["claims"]["stalled_rate"])
 
 
 if __name__ == "__main__":

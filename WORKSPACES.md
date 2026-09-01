@@ -24,8 +24,8 @@ Users do not create or select a workspace manually. A target-bearing request suc
 ```
 
 makes the skill run `workspace.py ensure`, `swarm.py init`, and `kb.py index` before launching peers.
-`ensure` derives a stable `site-<host>-p<port>` ID, creates or reuses the site scope/workspace, and
-selects it. An explicit assessment request is recorded as the operator's authorization assertion;
+`ensure` derives a stable `site-<host>-p<port>` ID, preserves the requested `http|https` scheme in
+`scope.yaml`, creates or reuses the site workspace, and selects it. An explicit assessment request is recorded as the operator's authorization assertion;
 ambiguous authorization is confirmed before target traffic.
 
 ## Manual create and select

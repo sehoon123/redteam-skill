@@ -2,43 +2,36 @@
 name: redteam
 description: |
   Phase-free autonomous multi-agent penetration testing for authorized targets.
-  Identical peers self-organize through a transactional event/lease/evidence ledger.
+  Equal-authority peers share a transactional claim/evidence ledger while host-owned HTTP execution survives model failure.
   Trigger: /redteam, "pentest this", "red team", "run a pentest", "자율 보안 평가".
 ---
 
 # Redteam
 
-인가된 환경을 여러 동일 peer가 **동시에** 평가하는 Pi skill.
-고정 phase도, 고정 recon/worker/validator 역할도 없다.
+인가된 target을 고정 role이나 phase 없이 평가한다. SQLite가 claim, evidence, attempt,
+finding, causal event, provider circuit, replay의 유일한 authority다. v3.7의 우선순위는 agent 수가
+아니라 **한 번 수행된 HTTP assertion을 model 종료 전에 durable result로 만드는 것**이다.
 
-OpenAI–Hugging Face 사건에서 실제 성과를 만든 패턴만 안전하게 가져왔다:
+- target HTTP: agent-owned curl이 아니라 host-owned `exec-http`
+- semantic interpretation + follow-up + completion: 한 transaction의 `checkpoint`
+- empty engagement: deterministic reachability/root-fetch work
+- interruption: `work.partial` + next-generation resume-first brief
+- stale owner: request 직전 claim fencing
+- launch: provider capacity에 맞춘 1→2→최대 3 elastic ramp
+- Evidence Graph/adaptive scheduler: benchmark가 필요성을 입증할 때까지 보류
 
-- shared message board → SQLite append-only event journal
-- task assignment/subdelegation → peer가 만드는 expiring work lease + durable claim generation
-- compressed dossier handoff → cohort별 handoff를 포함한 DB-derived dossier
-- scripts/gadgets/files와 target credentials 공유 → artifact/credential registry
-- 독립 reproduction 뒤 collective pivot → 검증 성공 시 follow-up work 자동 활성화
-- 죽은 agent의 작업 인계 → lease expiry + 다음 fresh-context cohort takeover
-- 수천 개 실패 경로와 재방문 → append-only attempt history
-- unexplored work 분배 → `next`가 coverage gap을 canonical task로 자동 materialize
-- collective cognition → typed causal event, task-local brief, deterministic replay projection
-
-사건의 위험한 패턴은 가져오지 않는다: agent-visible reward, scope drift,
-외부 dead drop/C2, persistence, transcript spoofing, safeguard 우회.
-근거와 정확한 출처는 `RESEARCH.md`, 협업 규약은 `SWARM.md`, 프롬프팅 연구는
-`PROMPTING-RESEARCH.md`를 읽어라. Causal protocol과 personalized brief 계약은
-`CAUSAL-PROTOCOL.md`.
+연구 근거는 `RESEARCH.md`와 `PROMPTING-RESEARCH.md`, 협업/causal 계약은 `SWARM.md`와
+`CAUSAL-PROTOCOL.md`, 비교 실험은 `SWARMBENCH.md`를 따른다.
 
 ## Operator contract
 
-실행 전에 operator가 제공해야 한다:
+실행 전에 다음이 필요하다.
 
-- 선택된 engagement workspace의 `scope.yaml`에 명시적 authorization과 target
-- 네트워크 allowlist/격리, rate limit, kill switch
-- optional intercepting proxy (`${PENTEST_PROXY:-http://127.0.0.1:8080}`); reachable하면 반드시 사용
+- 선택된 workspace `scope.yaml`의 명시적 authorization과 host/port/scheme allowlist
+- infrastructure network allowlist, rate limit, kill switch
+- 선택적 `${PENTEST_PROXY:-http://127.0.0.1:8080}`
 
-`swarm.py`는 scope 파일 hash를 engagement에 고정한다. 실행 중 scope가 바뀌면
-fail closed. 실제 네트워크 차단은 반드시 infrastructure layer에서 집행한다.
+Scope hash는 engagement 생성 시 고정된다. App-level 검사만으로 egress enforcement를 대신할 수 없다.
 
 ## 설치
 
@@ -51,38 +44,16 @@ cp -R benchmarks .pi/skills/redteam/
 cp agents/pentest-peer.md agents/pentest-peer-sonnet.md agents/pentest-peer-luna.md \
   agents/pentest-cohort-selector.md agents/pentest-run-recorder.md agents/luna-probe.md .pi/agents/
 cp -R pentest/. .pi/pentest/
-# settings.json의 세 peer override를 .pi/settings.json에 병합
+# settings.json의 peer model override를 .pi/settings.json에 병합
 ```
 
-Runtime code와 site data는 분리된다:
+Runtime은 공유되지만 scope, SQLite, scratch, findings, board, memory, cache는 engagement-local이다.
+Selection과 legacy fallback은 `WORKSPACES.md`를 따른다.
 
-```
-.pi/pentest/
-├── active-engagement
-├── engagements/<id>/
-│   ├── scope.yaml
-│   ├── state/               # authoritative SQLite ledger + local KB
-│   ├── scratch/             # site-local evidence/tools
-│   ├── findings/            # site-local report
-│   ├── board/               # site-local export
-│   ├── memory/              # site-local curated knowledge
-│   └── cache/
-├── swarm.py / protocol.py / scheduler.py / replay.py / benchmark.py / postflight.py / kb.py / workspace.py
-└── research/board/          # shared read-only operational research
-```
+## Automatic `/redteam <target>` bootstrap
 
-선택·병렬 실행·legacy 규칙은 `WORKSPACES.md`.
-
-## Automatic `/redteam <target>` bootstrap — 반드시 먼저 실행
-
-Target URL/hostname이 포함된 일반 `/redteam` 요청에서는 operator에게 workspace 이름,
-scope 파일, `create`, `use`, `init` 명령을 요구하지 않는다.
-
-1. `/redteam "https://example.com"에 대한 모의해킹을 진행해줘`처럼 target 평가를 명시적으로
-   요청한 문장은 해당 target에 대한 operator의 authorization assertion으로 취급한다. 단순 URL 질문,
-   무작위 제3자 탐색, 또는 authorization이 불명확하다고 사용자가 말한 경우에는 network traffic 전에
-   인가 여부를 한 번 확인한다.
-2. 확인된 target을 그대로 인자로 전달해 다음을 실행한다. Shell 문자열 결합으로 scope를 만들지 않는다.
+명시적인 `/redteam <URL>` 요청은 그 target에 대한 operator authorization assertion으로 취급한다.
+인가가 불명확하다고 사용자가 말했거나 단순 URL 질문이면 traffic 전에 확인한다.
 
 ```bash
 python3 .pi/pentest/workspace.py ensure \
@@ -92,55 +63,38 @@ python3 .pi/pentest/swarm.py init
 python3 .pi/pentest/kb.py index
 ```
 
-`ensure`가 host/port 기반 stable ID를 만들고 site workspace 생성 또는 재사용, scope 생성, 선택까지
-처리한다. Scope와 selection pointer는 각각 atomic replace한다. 동일 target 재호출은 기존 site를 resume한다. 현재 site에 live peer가 있으면
-pointer를 바꾸지 않고 fail closed하므로, 그때만 별도 Pi process를
-`PENTEST_ENGAGEMENT=<reported-id> pi`로 시작하라고 안내한다. Bootstrap 성공 뒤 canonical workflow를
-실행한다.
+`ensure`는 host/port 기반 stable ID를 만들고 동일 target을 idempotently 재사용한다. Live peer나 lease가
+있으면 selection pointer 변경은 fail closed한다. 여러 site는 site별 process와
+`PENTEST_ENGAGEMENT=<id>`를 사용한다. 사용자는 단순 target 요청에서 `create/use`를 직접 다루지 않는다.
 
-수동 scope가 필요한 복잡한 allowlist/credentials assessment만 `create --id ... --scope ...`를 쓴다.
-여러 site를 동시에 실행하면 global pointer를 바꾸지 말고 site별 Pi process를
-`PENTEST_ENGAGEMENT=SITE-A pi`처럼 시작한다. Peer는 `engagement_env.sh`를 source해
-site-local scratch/report 경로를 사용한다. Selection이 없으면 기존 single-site layout을 그대로 쓴다.
+`init`은 fresh empty ledger에 아직 work를 쓰지 않는다. 첫 `peer-start/next`가 work/surface/attempt가
+모두 0일 때 다음 두 work를 한 번만 materialize한다.
 
-`init` is idempotent for the same scope hash and starts `cohort-1` with a target of eight
-concurrent equal-authority slots. Normal peers load `status`, claim via `next --brief`, then use
-`observe/hypothesize/request/respond/challenge/decide/handoff/synthesize`; global dossier is only a
-wait/recovery fallback. Typed request/challenge can create causally sourced work atomically. Luna fresh replacements may create more than eight joined actor
-records. A changed scope requires a new `engagement_id`; old work cannot silently cross engagements.
-
-## Proxy auto contract
-
-기본 `PENTEST_PROXY_POLICY=auto`다. Peer는 `next` 전에 `proxy-check`를 실행한다:
-
-```bash
-. .pi/pentest/proxy_env.sh --agent "$AGENT"
-python3 .pi/pentest/swarm.py proxy-check --agent "$AGENT" \
-  --proxy "$PENTEST_PROXY" --timeout 5
-. .pi/pentest/proxy_env.sh --agent "$AGENT"
+```text
+baseline:<host>:reachability
+baseline:<host>:root-fetch
 ```
 
-Proxy가 reachable이면 ledger가 `proxy.checked`와 `network_mode=proxy`를 기록하고 모든 curl,
-Python, browser target traffic은 explicit proxy를 사용한다. 연결 자체가 unavailable이면
-`proxy.unavailable` warning을 기록하고 `network_mode=direct`로 lease를 계속하므로 reversing/offline
-work가 막히지 않는다. Proxy가 연결을 받은 뒤 CONNECT를 거부하면 우회하지 않고 중단한다.
-Strict 운영은 `PENTEST_PROXY_POLICY=required`; 자세한 조건부 도구 설정은 `PROXY.md`.
+기존 work가 있으면 bootstrap이 끼어들지 않는다. Ungrounded hypothesis는 거부된다.
 
-## Canonical launch — 이 경로만 사용
+## Proxy-auto와 network fencing
 
-> **필수:** Luna를 static fire-and-forget autonomous batch에 넣지 않는다.
-> `PROMPTING-RESEARCH.md`는 연구 근거이며 launch source가 아니다. 실행은 아래
-> `workflowScriptPath`만 사용한다.
+기본 `PENTEST_PROXY_POLICY=auto`다.
 
-`join`의 안전한 기본값은 one-shot이다. `pentest-peer-luna`는 명시적으로 `--one-shot`을
-사용해 한 context에서 lease 하나의 bounded assertion을 artifact/ledger에 기록한 뒤
-종료한다. Flag가 빠져도 ledger가 두 번째 claim을 거부한다. Claude profile만
-`--continuous`를 명시해 autonomous loop를 사용한다.
-Workflow가 다음 Luna child를
-`context: "fresh"`로 시작한다. 따라서 사용자가 launch 예시만 복사해도 장기 Luna 대화가
-생기지 않는다.
+- reachable CONNECT → `proxy.checked`, runner가 explicit `ProxyHandler` 사용
+- connection unavailable → `proxy.unavailable`, direct/offline 허용
+- reachable rejection → `proxy.rejected`, traffic 차단
+- `required` → unavailable도 차단
+- `off` → explicit direct mode
 
-### 1. Canonical workflow 실행
+`peer-start`가 join, proxy decision, claim, task-local brief를 한 번에 처리한다. `exec-http`는 URL의
+host/port를 scope와 비교하고 redirect를 follow하지 않으며, request 직전에 live claim을 다시 확인한다.
+모든 request에 host-owned `X-Redteam-Agent`, `X-Redteam-Claim`, `X-Redteam-Experiment`,
+`X-Redteam-Engagement`를 넣는다. Agent가 같은 header를 덮어쓸 수 없다. 자세한 의미는 `PROXY.md`.
+
+## Canonical elastic launch
+
+Canonical source는 `workflows/cohort.js` 하나뿐이다.
 
 ```js
 subagent({
@@ -148,246 +102,158 @@ subagent({
   cwd: ".",
   async: true,
   timeoutMs: 3600000,
-  globalConcurrencyLimit: 8,
-  maxSubagentSpawnsPerRun: 63
+  globalConcurrencyLimit: 3,
+  maxSubagentSpawnsPerRun: 9
 })
 ```
 
-Workflow의 `cohort-mode` selector가 ledger status를 읽어 cohort 1이면 Sonnet,
-cohort 2 이상이면 Opus profile을 자동 선택한다. Operator나 peer가 work 유형을 분류하지
-않으며 코호트 안의 모든 peer는 동일 authority로 모든 ready work를 자유롭게 claim한다.
-Selector가 cohort 번호를 확인하지 못하면 launch 전에 fail closed한다.
+Workflow contract:
 
-Workflow 실행 계약:
+1. Cohort 1은 Sonnet, cohort 2+는 Opus profile을 선택한다. Work 종류로 model을 route하지 않는다.
+2. 첫 peer 하나만 launch하고 durable useful action과 provider circuit health를 관찰한다.
+3. Durable experiment와 ready backlog가 있을 때 두 번째 peer를 launch한다.
+4. Verify work 또는 서로 다른 grounded workstream이 있을 때만 세 번째 peer를 launch한다.
+5. Target peer 기본값과 최대 동시 assessment peer는 3이다.
+6. Provider 429는 model ID와 분리된 logical provider key(`claude`)로 15분 global backoff를 열고 새 same-provider launch/replacement를 막는다.
+7. Failed child를 같은 workflow에서 retry/resume/reroute하지 않는다. Fallback model은 없다.
+8. Runtime API가 강제 child kill을 보장하지 않으므로 replacement는 terminal receipt 뒤에만 가능하다;
+   stale target traffic 자체는 `exec-http` fencing이 차단한다.
+9. Actor label은 workflow key와 동일해야 `run-result` provenance가 연결된다.
 
-- Claude logical slot 5개: 30분 bounded Sonnet/Opus peer; terminal failure 시 fresh replacement 1회
-- Luna logical slot 3개: 최대 7개의 서로 다른 one-shot fresh child가 slot별로 순차 실행
-- 각 Luna child: 10분 timeout, lease 최대 1개, bounded assertion 1개, artifact/hash handoff 후 종료
-- Supervisor가 child terminal result를 관찰하고 failure를 즉시 ledger에 기록한 뒤 slot을 보충
-- agent-visible refusal은 `task.blocked` + `leave --refusal`로 즉시 `failed`; flag가 빠져도 ledger가 blocked event를 감지
-- replacement는 refused work가 아닌 다른 ready work를 claim
-- replacement는 같은 agent profile/model을 사용하며 fallback이나 model reroute가 아님
-- Claude slot은 initial + replacement 1회, Luna slot은 전체 7 generations로 bounded
-- `budget`, provider 429/rate-limit, recorder failure 또는 동일 slot 연속 failure 2회는 circuit breaker
-- 각 peer는 proxy-check 성공 전 lease를 받지 못하며 curl/Python/browser 모두 explicit proxy 사용
-- peer runs는 `acceptance:false`; artifact/attempt/finding ledger가 evidence contract이며 중복 harness 보고서 주입을 피함
-- 대화 transcript 대신 SQLite ledger와 scratch artifact만 replacement에 전달
-- actor label은 dynamic workflow key와 동일하고 cohort 내 중복 join이 거부됨
-
-`pentest-peer-luna`를 별도의 장기 loop로 추가하거나 canonical 파일을 static fanout으로 바꾸지
-않는다. 교체 상한은 `maxClaudeGenerations`와 `maxLunaGenerations`만 조정한다.
-
-### 2. Postflight와 다음 cohort
-
-Rolling supervisor는 terminal failure마다 `pentest-run-recorder`의 host-verified gate로 즉시 `run-result`를 기록한다.
-Workflow 종료 후 parent postflight는 status file 전체를 다시 처리하는 idempotent backstop이다.
-실패 작업을 다른 모델로 reroute하지 않고 `refusal|budget|timeout|interrupted|provider-error`로
-분류한다.
+Workflow 종료 후 parent backstop:
 
 ```bash
 python3 .pi/pentest/postflight.py <workflow-run-dir>/status.json \
-  --end-cohort --reason 'canonical cohort workflow complete'
-python3 .pi/pentest/swarm.py cohort-start --label cohort-2 --peers 8
+  --end-cohort --reason 'elastic cohort complete'
+python3 .pi/pentest/swarm.py cohort-start --label cohort-2 --peers 3
 ```
 
-다음 cohort는 누적 ledger/backlog를 fresh context로 이어받는다. Cohort 1의 Sonnet이 만든
-surface, finding, hypothesis는 cohort 2의 Opus에게 역할 지정 없이 그대로 제공된다.
+## Reliable atomic assertion
 
-## Why rolling replacement is part of launch
-
-METR/Redwood observed that `PHASEONE10841` compressed its work into a dossier and handed it to the
-higher-budget `PHASEONE[big]`; later agents continued from shared state instead of predecessor chat.
-They also observed a sharp activity drop after all identified key Hugging Face coordinators exited.
-The useful mechanism is therefore **capacity replacement + durable handoff**, not retrying a dead
-agent's exact request.
-
-This skill applies that distinction mechanically:
-
-```
-refusal → atomically fail leased work → record terminal outcome → fresh same-model slot replacement
-                                                └─ replacement claims another ready work
-```
-
-Replacement is bounded and stops on budget exhaustion or recorder failure. It never paraphrases the
-refused request, resumes the refused context, or changes model routes.
-
-## Why fresh Luna stages are part of launch
-
-SET 4에서는 single-session multi-step Luna가 첫 safe step만 수행하고 완료한 반면, SET 5의
-7개 fresh contexts는 같은 authorized local chain을 끝까지 검증했다. 이 차이는 프롬프트
-설명만으로 해결되지 않는다. 그래서 다음 네 곳에서 동일 계약을 강제한다:
-
-1. `SKILL.md`: canonical workflow 외 launch 금지
-2. `workflows/cohort.js`: cohort model 자동 선택 + rolling slot replenishment
-3. `agents/pentest-peer-luna.md` + ledger: one-shot lease와 `done` 전 work artifact 강제
-4. recorder host gate + `postflight.py`: terminal outcome 즉시 기록과 최종 idempotent backstop
-
-## Claude peer runtime
-
-Sonnet/Opus peer는 다음 autonomous loop를 지킨다. Luna에는 이 loop를 적용하지 않는다;
-Luna는 `agents/pentest-peer-luna.md`의 one-shot lifecycle을 사용한다.
-
-```
-join(cursor) → minimal status/proxy decision → next(atomic lease + task-local brief)
-  ├─ untested gap: auto-created coverage work → linked attempt → done
-  ├─ work 있음: execute → 즉시 typed assertion/artifact/credential/finding 공유
-  ├─ verification: finder와 다른 peer가 fresh evidence로 attest
-  ├─ reproduced: planned follow-up tasks가 ready로 전환 → collective pivot
-  ├─ work 없음: compact dossier 확인 → typed hypothesis/request → next
-  └─ cohort timebox/quiescence: leave(summary)
-```
-
-### 핵심 명령
+### 1. Peer startup
 
 ```bash
-S=.pi/pentest/swarm.py
-python3 "$S" status
-python3 "$S" next --agent "$AGENT" --wait 10 --lease 180 --quiet 90 \
-  --brief --brief-tokens 2200 --after "$CURSOR"
-python3 "$S" brief --agent "$AGENT" --work "$WORK" --after "$CURSOR"
-python3 "$S" heartbeat --agent "$AGENT" --work "$WORK" --lease 180
-python3 "$S" done --agent "$AGENT" --work "$WORK" --summary 'result and follow-ups'
-# wait/recovery only: dossier --recent 8 --gap-limit 5 --compact
+. .pi/pentest/engagement_env.sh
+python3 .pi/pentest/swarm.py peer-start --label '<assigned-label>' --continuous \
+  --proxy-policy "${PENTEST_PROXY_POLICY:-auto}" \
+  --lease 180 --no-progress 120 --brief-tokens 1400
 ```
 
-### Immediate typed sharing
+반환값에는 agent ID, network mode, scratch, claim, partial-first brief가 있다. Fresh shell마다 engagement
+환경을 다시 source하되 전체 운영 문서를 다시 읽지 않는다.
+
+### 2. Host-owned HTTP execution
 
 ```bash
-OBS=$(python3 "$S" observe --agent "$AGENT" --work "$WORK" --workstream order-authz \
-  --claim 'orderId changes response class' --confidence 0.7 \
-  --subjects '["surface:GET /order/details"]' --evidence "[\"sha256:$SHA\"]")
-OBS_SEQ=$(python3 -c 'import json,sys;print(json.load(sys.stdin)["seq"])' <<<"$OBS")
-python3 "$S" request --agent "$AGENT" --work "$WORK" --workstream order-authz \
-  --claim 'fresh account must discriminate ownership from tenant behavior' \
-  --subjects '["surface:GET /order/details"]' --caused-by "$OBS_SEQ" \
-  --next-actions '[{"key":"orders:fresh-account","title":"Fresh-account replay","diversity_key":"identity"}]'
-python3 "$S" attempt-add --agent "$AGENT" --work "$WORK" \
-  --surface 'GET /order/details' --check access-control --result partial
+python3 .pi/pentest/swarm.py exec-http \
+  --agent "$AGENT" --work "$WORK" \
+  --method GET --url 'https://scoped.example/' \
+  --check baseline-reachability --timeout 30 \
+  --expected '{"status":[200,301,302,401,403]}'
 ```
 
-`emit`은 `task.blocked`와 legacy escape hatch에만 사용한다. 전체 schema는 `CAUSAL-PROTOCOL.md`.
+한 command가 다음을 수행한다.
 
-### Evidence and independent reproduction
+```text
+live claim 검증 → ExperimentSpec commit → request-time fencing → finite HTTP operation
+→ bounded request/response artifact → surface/check → partial|error attempt
+→ execution.completed|error commit
+```
+
+`expected`는 reporting hint일 뿐 취약점 verdict가 아니다. Redirect는 capture하지만 follow하지 않는다.
+동일 work/request fingerprint의 durable experiment가 있으면 `resume-required`를 반환하고 재전송하지 않는다.
+Terminated old claim의 `prepared` intent는 send 전임이 확정되므로 새 claim에 rebind할 수 있다. `sending`은
+원격 exactly-once를 추측하지 않고 `indeterminate`로 멈춘다.
+
+### 3. Atomic semantic checkpoint
 
 ```bash
-python3 "$S" finding-add --agent "$AGENT" --work "$WORK" \
-  --title 'Order detail authorization boundary' --severity High \
-  --type access-control --endpoint 'GET /order/details?orderId=' \
-  --evidence "$PENTEST_SCRATCH/order-response.txt" \
-  --details '{"repro":"...","impact":"...","follow_ups":[
-    {"key":"other-role","title":"Replay primitive with another role","priority":90},
-    {"key":"bulk-endpoint","title":"Test the same primitive on the bulk API"}
-  ]}'
+python3 .pi/pentest/swarm.py checkpoint \
+  --agent "$AGENT" --work "$WORK" --experiment "$EXPERIMENT" \
+  --message-type observation --claim 'root returned an application shell' \
+  --confidence 0.8 \
+  --next-actions '[{"key":"root:assets","kind":"experiment","title":"Inspect referenced assets"}]' \
+  --finish done --summary 'durable baseline interpreted'
+```
 
-# Automatically created verify task is forbidden to the finder. A reproduced
-# verdict atomically activates the planned follow-up work.
-python3 "$S" finding-attest --agent "$OTHER_AGENT" --work "$VERIFY_WORK" \
+한 SQLite transaction이 experiment provenance, typed assertion, grounded next work, experiment checkpoint,
+work/claim completion을 처리한다. New generation은 같은 work의 이전 durable experiment를 checkpoint할 수
+있지만 old owner는 mutation할 수 없다. Verify work는 계속 `finding-attest`로만 완료한다.
+
+정상 HTTP assertion path는 `peer-start → exec-http → checkpoint` 세 번이다.
+
+## Timing and partial takeover
+
+시간 관계:
+
+```text
+operation timeout < no-progress timeout < claim lease < child timeout
+```
+
+Bookkeeping/inbox/brief/heartbeat는 lease를 갱신하지 않는다. Durable artifact/attempt, host execution,
+typed assertion, finding/attestation만 material progress다. Lease deadline이 먼저 지나면 `expired`, lease가
+살아 있어도 no-progress window가 지나면 `stalled`다.
+
+Timeout/interruption/release 시 experiment나 artifact가 있으면 semantic verdict를 만들지 않고
+`work.partial`을 기록한다. 다음 brief의 `partial_experiments`에는 상태별 exact action이 포함된다:
+`completed/error`는 checkpoint, terminated `prepared`는 safe pre-send rebind, `sending`은 no-repeat
+uncertainty다. Resume-first는 scheduler heuristic이 아니라
+correctness rule이며 live scheduling은 계속 `fifo-v1`이다.
+
+SQLite와 remote HTTP를 하나의 ACID transaction으로 만들 수는 없다. Runner는 spec-before-I/O,
+request-time fence, bounded timeout, host-owned post-I/O commit으로 crash window를 최소화한다. Bytes가
+전송된 직후 host process가 강제 종료되는 좁은 exactly-once gap은 숨기지 않는다.
+
+## Findings and independent reproduction
+
+`checkpoint`는 HTTP status를 finding으로 승격하지 않는다. Concrete candidate만 기존 command를 사용한다.
+
+```bash
+python3 .pi/pentest/swarm.py finding-add --agent "$AGENT" --work "$WORK" \
+  --title 'Observed authorization boundary' --severity High --type access-control \
+  --endpoint 'GET /orders/1' --evidence "$PENTEST_SCRATCH/evidence.txt"
+python3 .pi/pentest/swarm.py finding-attest --agent "$OTHER_AGENT" --work "$VERIFY_WORK" \
   --finding FIND-0001 --verdict reproduced \
-  --evidence "$PENTEST_SCRATCH/order-replay.txt" --notes 'fresh-session replay'
+  --evidence "$PENTEST_SCRATCH/replay.txt" --notes 'independent reproduction'
 ```
 
-## Why no bounty points
+Finder는 자기 finding을 attest할 수 없다. Reproduced finding만 planned pivots를 활성화한다.
 
-OpenAI의 사건 자체가 reward hacking에서 시작했다. Agent에게 CVSS×points, winner,
-diversity multiplier를 보여주면 finding spam과 score manipulation이 목표가 된다.
-따라서 peer는 점수를 볼 수 없다. Operator만 immutable evidence에서 사후 지표를 본다:
+## Metrics, replay, and benchmark gates
 
 ```bash
 python3 .pi/pentest/swarm.py metrics
 python3 .pi/pentest/swarm.py communication-metrics
-```
-
-지표: finding/validation/coverage와 aggregate typed adoption, actionable-event ratio,
-consumption latency, causal unlock, duplicate spawn, herding, challenge resolution. Agent별
-points/rank/winner는 만들지 않는다.
-
-## Cohort handoff and saturation
-
-Peer는 timebox/quiescence에 `leave --summary`로 현재 lease를 반납한다. 응답 전에 provider가
-종료시키면 parent postflight가 원인을 기록하고 lease를 반납한다. Cohort 종료 시 handoff,
-run-result, 미완료 work, surface/finding/attempt delta가 고정된다. 다음 cohort는 canonical
-`cohort.js`를 다시 실행하며 selector가 Opus profile을 선택하고 ready work와 gaps를 이어받는다.
-
-```bash
-python3 .pi/pentest/swarm.py cohort-end --reason 'timebox complete'
-python3 .pi/pentest/swarm.py cohort-start --label next-fresh-context --peers 8
-# next가 wait/recovery를 반환한 경우에만 global fallback
-python3 .pi/pentest/swarm.py dossier --recent 8 --gap-limit 5 --compact
-```
-
-`saturation`은 target peer 수를 채운 연속 2개 completed cohort에서 새 surface와 reproduced
-finding이 없고, proposed finding 및 priority 80+ work가 없을 때만 true다. 빈/미달 cohort는
-streak에 포함하지 않는다. Coverage gap 자체는 계속 report에 남는다.
-
-```bash
-python3 .pi/pentest/swarm.py saturation --streak 2
-python3 .pi/pentest/swarm.py close --require-saturation --streak 2 \
-  --reason 'two dry cohorts and no high-priority backlog'
-```
-
-긴급 operator stop은 `close --reason ...`으로 언제든 가능하다. 독립 verifier가 없으면
-`verification-blocked`가 반환된다. 같은 cohort의 process만 끊겼다면 close/end하지 말고
-resume하면 expired lease가 자동 회수된다.
-
-## Export
-
-Pentest 실행과 reporting은 phase로 분리되지 않는다. Peer가 실행 중 계속 findings와
-attestation을 기록하고, operator는 원하는 시점에 동일 ledger snapshot을 export한다.
-
-```bash
-python3 .pi/pentest/swarm.py report
-python3 .pi/pentest/swarm.py export
 python3 .pi/pentest/swarm.py replay-export --strict
 python3 .pi/pentest/replay.py --events "$PENTEST_BOARD/replay.json" --policy fifo-v1 --strict
 ```
 
-`report`, legacy-compatible JSONL `export`, canonical replay projection은 선택된 workspace에
-atomic replace로 생성된다. 같은 snapshot의 replay export는 byte-identical하며 causal/evidence,
-claim-generation, work-fingerprint, decision-time candidate set을 strict validation한다. 대체
-policy는 ranking만 비교하며 outcome 우월성을 추정하지 않는다. Controlled effectiveness 비교는
-`SWARMBENCH.md`의 solo/isolated-parallel/shared-swarm manifest를 사용한다.
+Metrics는 durable/completed assertions, stalled/expired claims, stage latency,
+productive tool-call ratio와 completed assertion당 tool calls를 보고한다. Harness가 제공하지 않은 token,
+request, first-output/tool timestamp는 `null`이다. Strict replay는 experiment→claim→attempt→artifact→checkpoint,
+provider circuit, scheduler decision을 검증한다. Alternative scheduler policy는 ranking-only다.
 
-## Prompting discipline
+Evidence Graph/adaptive scheduler 전에 다음 gate를 통과한다.
 
-상세 실험은 `PROMPTING-RESEARCH.md`. Runtime에서는 다음만 적용한다:
+1. Loopback baseline 10/10 durable attempts, 9/10+ completion, expired ≤1/10.
+2. Forced partial takeover 5/5 artifact reuse, duplicate target request 0.
+3. 2→필요 시 3 peer shared validation 3회, claim completion ≥80%, expired ≤10%, strict replay 0.
+4. 그 뒤에만 reset-controlled Solo/isolated/shared를 각각 3회 이상 비교한다.
 
-1. authorization과 target context를 명시한다.
-2. 큰 요청은 관찰 → 최소 PoC → impact 기록으로 분해한다.
-3. Claude child는 cohort마다 fresh로 시작한다. Luna는 **lease마다** fresh child로 교체하며
-   결과를 ledger/artifact로만 전달한다.
-4. raw payload보다 재현 스크립트와 evidence file을 선호한다.
-5. agent가 응답할 수 있는 refusal은 `task.blocked`; 응답 자체가 끊긴 refusal은 parent `postflight.py`가 기록한다. 둘 다 재시도·모델 우회하지 않는다.
-
-## Knowledge search
-
-```bash
-python3 .pi/pentest/kb.py index
-python3 .pi/pentest/kb.py search 'prototype pollution'
-python3 .pi/pentest/kb.py search '인증 취약점'
-```
-
-FTS5 trigram을 사용하므로 한국어 substring 검색이 LIKE fallback에만 의존하지 않는다.
-`body`가 없는 structured JSONL도 전체 payload를 index한다.
+Agent-visible reward/points/winner는 없다. Missing data를 0으로 만들지 않는다.
 
 ## Minimum acceptance
 
-Engagement가 유효하려면:
-
-- 모든 live mutation은 SQLite journal을 경유
-- concurrent claim winner가 정확히 1명
-- dead peer lease가 회수 가능
-- finding의 finder와 verifier가 다름
-- evidence artifact SHA-256 기록
-- attempt history가 overwrite되지 않음
-- scope hash mismatch는 fail closed
-- operator report에 validation status와 coverage gap 포함
-- `next`가 untested surface×check를 distinct coverage lease로 materialize
-- reproduced finding만 planned follow-up work를 활성화
-- cohort 종료 뒤 work/handoff가 다음 fresh cohort에 유지
-- saturation close가 dry-cohort streak와 고우선 backlog를 검사
-- canonical workflow만 launch source이며 Luna를 장기 `runs.all` loop로 시작하지 않음
-- 모든 Luna stage가 새 `agent` + `context: "fresh"`이고 `resume: "previous"`를 쓰지 않음
-- `join`은 기본 one-shot이며 Claude만 `--continuous`; ledger가 Luna의 두 번째 lease를 거부함
-- one-shot work는 등록된 work artifact 없이는 ledger가 `done`을 거부함
-- agent-visible refusal은 structured `verdict=blocked,outcome=refusal`로 rolling supervisor와 postflight에 전달됨
-- auto-policy peer는 `proxy.checked` 또는 `proxy.unavailable` 결정 전 lease를 받을 수 없음
+- scope/hash/workspace isolation과 proxy-auto semantics 유지
+- empty ledger deterministic bootstrap, ungrounded hypothesis 거부
+- active claim 및 scoped URL 없이는 `exec-http` request 0
+- target response 뒤 model이 죽어도 artifact + partial/error attempt 보존
+- duplicate same-work request는 `resume-required`, 재전송 0
+- `checkpoint` event/follow-up/completion atomicity
+- stale owner mutation/request fencing
+- `expired`와 `stalled` 분리, bookkeeping renewal 금지
+- partial-first brief와 cross-generation checkpoint
+- provider-wide 429 circuit, initial concurrency 1, assessment peer 최대 3
+- finding finder/verifier 분리와 SHA-256 evidence
+- replay byte determinism과 strict validation
+- Evidence Graph/adaptive scheduler 미구현

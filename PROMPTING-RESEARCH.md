@@ -4,8 +4,8 @@
 Safeguard를 우회하기 위한 지침이 아니다. Refusal은 재시도하거나 다른 모델로 자동 우회하지 않는다.
 
 > **연구 문서이며 launch source가 아니다.** 실행 시 이 문서의 예시를 복사하지 말고
-> `SKILL.md`의 canonical `workflowScriptPath`만 사용한다. 그 workflow와
-> `agents/pentest-peer-luna.md`가 fresh-context/one-lease 계약을 강제한다.
+> `SKILL.md`의 canonical `workflowScriptPath`만 사용한다. 현재 workflow는 Luna 실험 fanout이
+> 아니라 provider-aware 1→2→최대 3 elastic Claude cohort와 atomic execution 계약을 강제한다.
 
 ---
 

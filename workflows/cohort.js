@@ -1,63 +1,37 @@
+var providerKey = "claude";
 var cohortInfo = await runs.run("cohort-mode", {
   agent: "pentest-cohort-selector",
   context: "fresh",
-  task: "Run python3 .pi/pentest/swarm.py status without modifying files or ledger. Return the active cohort number only through the required structured output.",
+  task: "Run python3 .pi/pentest/swarm.py status --provider " + providerKey +
+    " exactly once. Return active cohort number and provider.blocked.",
   outputSchema: {
     type: "object",
-    properties: { number: { type: "integer", minimum: 1 } },
-    required: ["number"],
+    properties: {
+      number: { type: "integer", minimum: 1 },
+      providerBlocked: { type: "boolean" }
+    },
+    required: ["number", "providerBlocked"],
     additionalProperties: false
   }
 });
 
 var cohortNumber = cohortInfo.structuredOutput.number;
-var claudeAgent = cohortNumber === 1 ? "pentest-peer-sonnet" : "pentest-peer";
-// Worst case: selector 1 + Claude 5×2×(child+recorder) + Luna 3×7×(child+recorder) = 63 runs.
-var maxClaudeGenerations = 2;
-var maxLunaGenerations = 7;
-var maxConsecutiveFailures = 2;
-var control = {
-  needsAttentionAfterMs: 180000,
-  notifyOn: ["needs_attention"]
-};
+var peerAgent = cohortNumber === 1 ? "pentest-peer-sonnet" : "pentest-peer";
+if (cohortInfo.structuredOutput.providerBlocked) {
+  return { cohortNumber: cohortNumber, providerKey: providerKey, stopped: true, reason: "provider-circuit", peers: [] };
+}
 
-var claudeTask = [
+var control = { needsAttentionAfterMs: 180000, notifyOn: ["needs_attention"] };
+var peerTask = [
   "너는 인가된 보안 평가의 동일 권한 peer다.",
-  "고정 역할과 phase 없이 loaded agent profile의 autonomous loop를 수행해.",
-  "engagement_env.sh를 source하고 선택된 engagement의 scope/ledger/scratch만 authoritative state로 사용해. 다른 engagement directory를 읽거나 쓰지 마.",
-  "PROXY.md의 auto policy를 따라 proxy-check해. proxy가 reachable이면 모든 curl/Python/browser target traffic에 명시적으로 사용하고, unavailable이면 ledger warning을 남긴 뒤 direct/offline mode로 계속해.",
-  "next --brief로 task-local provenance만 읽고, 발견은 typed causal command로 공유·독립 재현하며 유한 tool timeout을 사용해.",
-  "종료 전 leave --summary로 handoff해.",
-  "provider refusal은 재시도하거나 다른 모델로 우회하지 마."
+  "고정 역할이나 phase 없이 loaded profile을 수행해.",
+  "첫 명령은 peer-start이며, 응답의 claim과 task-local brief만 사용해.",
+  "모든 target HTTP traffic은 exec-http로만 실행하고 직접 curl/Python/browser request를 보내지 마.",
+  "completed/error partial_experiments는 기존 evidence를 checkpoint하고, prepared는 exec-http pre-send recovery만 사용하며, sending은 반복하지 마.",
+  "결과는 checkpoint 한 번으로 해석, follow-up 생성, work 종료까지 원자적으로 남겨.",
+  "provider refusal이나 429는 재시도, paraphrase, resume, reroute, fallback하지 마.",
+  "유한 timeout을 사용하고 종료 전에 leave --summary를 실행해."
 ].join(" ");
-
-var lunaTask = [
-  "너는 인가된 보안 평가의 동일 권한 fresh-context peer다.",
-  "loaded pentest-peer-luna profile의 one-shot lifecycle을 그대로 수행해.",
-  "engagement_env.sh를 source하고 선택된 engagement의 scope/ledger/scratch만 사용해. 다른 engagement directory를 읽거나 쓰지 마.",
-  "PROXY.md의 auto policy를 따라 proxy-check해. proxy가 reachable이면 모든 curl/Python/browser target traffic에 명시적으로 사용하고, unavailable이면 ledger warning을 남긴 뒤 direct/offline mode로 계속해.",
-  "next --brief로 ready work를 최대 한 번 claim하고 한 bounded assertion을 typed causal checkpoint로 남겨.",
-  "결과를 scratch artifact와 ledger에 checkpoint하고 done/fail/attest한 뒤 leave해.",
-  "join --one-shot을 사용해. ledger가 두 번째 lease를 거부하므로 continuous loop를 시작하지 마.",
-  "다음 fresh context는 오직 ledger의 artifact path와 SHA-256으로 이어받는다.",
-  "provider refusal은 재시도하거나 다른 모델로 우회하지 마.",
-  "정상 완료는 verdict=complete, 응답 가능한 refusal은 verdict=blocked와 outcome=refusal로 구조화해.",
-  "structured actorLabel은 task에 인용된 label을 문장부호 없이 정확히 사용해."
-].join(" ");
-
-var lunaResult = {
-  type: "object",
-  properties: {
-    verdict: { type: "string", enum: ["complete", "blocked"] },
-    outcome: { type: "string", enum: ["completed", "wait", "handoff", "refusal"] },
-    actorLabel: { type: "string" },
-    workId: { type: "integer", minimum: 0 },
-    artifacts: { type: "array", items: { type: "string" }, maxItems: 16 },
-    summary: { type: "string" }
-  },
-  required: ["verdict", "outcome", "actorLabel", "workId", "artifacts", "summary"],
-  additionalProperties: false
-};
 
 var recordResult = {
   type: "object",
@@ -69,24 +43,34 @@ var recordResult = {
   required: ["recorded", "category", "released"],
   additionalProperties: false
 };
+var rampResult = {
+  type: "object",
+  properties: {
+    ready: { type: "boolean" },
+    blocked: { type: "boolean" },
+    readyWork: { type: "integer", minimum: 0 },
+    usefulActions: { type: "integer", minimum: 0 }
+  },
+  required: ["ready", "blocked", "readyWork", "usefulActions"],
+  additionalProperties: false
+};
 
 function terminalCategory(result) {
-  var structured = result.structuredOutput || {};
-  var allText = [result.error || "", result.output || "", JSON.stringify(structured)].join(" ").toLowerCase();
-  if (structured.outcome === "refusal" || allText.includes("cybersecurity risk") ||
-      allText.includes("cyber content") || allText.includes("cyber verification program") ||
-      allText.includes("blocked under anthropic") || allText.includes("trusted access for cyber")) return "refusal";
-  if (structured.verdict === "blocked") return "provider-error";
+  var text = [result.error || "", result.output || "", JSON.stringify(result.structuredOutput || {})].join(" ").toLowerCase();
   if (result.ok === true || result.success === true) return "completed";
-  if (allText.includes("budget")) return "budget";
-  if (allText.includes("timeout") || allText.includes("timed out") || allText.includes("deadline")) return "timeout";
-  if (allText.includes("interrupt") || allText.includes("paused")) return "interrupted";
+  if (text.includes("cybersecurity risk") || text.includes("cyber content") ||
+      text.includes("trusted access for cyber") || text.includes("blocked under anthropic")) return "refusal";
+  if (text.includes("too many requests") || text.includes('"code":"429"') || text.includes("status 429")) return "provider-error";
+  if (text.includes("budget")) return "budget";
+  if (text.includes("timeout") || text.includes("timed out") || text.includes("deadline")) return "timeout";
+  if (text.includes("interrupt") || text.includes("paused")) return "interrupted";
   return "provider-error";
 }
 
 function opensCircuit(result, category) {
   var text = [result.error || "", result.output || ""].join(" ").toLowerCase();
-  return category === "budget" || text.includes("too many requests") || text.includes('"code":"429"');
+  return category === "budget" || text.includes("too many requests") ||
+    text.includes('"code":"429"') || text.includes("status 429");
 }
 
 function quoted(value) {
@@ -94,22 +78,28 @@ function quoted(value) {
 }
 
 function appendMetric(parts, flag, value) {
-  if (typeof value === "number" && isFinite(value) && value >= 0) {
-    parts.push(flag + " " + quoted(value));
+  if (typeof value === "number" && isFinite(value) && value >= 0) parts.push(flag + " " + quoted(value));
+}
+
+function terminalDetail(result, category) {
+  var text = [result.error || "", result.output || ""].join(" ").toLowerCase();
+  if (text.includes("too many requests") || text.includes('"code":"429"') || text.includes("status 429")) {
+    return "provider 429 too many requests";
   }
+  if (category === "refusal") return "provider policy refusal";
+  return (result.error || "elastic supervisor recorded " + category).split("\n")[0].slice(0, 500);
 }
 
 function recordTerminal(label, result, category) {
   var runId = result.runId || ("cohort-" + cohortNumber + ":" + label);
-  var provider = result.model || "";
   var commandParts = [
     "python3 .pi/pentest/swarm.py run-result",
     "--label " + quoted(label),
     "--run-id " + quoted(runId),
-    "--provider " + quoted(provider),
+    "--provider " + quoted(providerKey),
     "--status failed",
     "--category " + quoted(category),
-    "--detail " + quoted("rolling supervisor recorded " + category)
+    "--detail " + quoted(terminalDetail(result, category))
   ];
   var startedAt = typeof result.startedAt === "number" ? result.startedAt / 1000 : null;
   var endedAt = typeof result.durationMs === "number" && typeof result.startedAt === "number"
@@ -123,88 +113,155 @@ function recordTerminal(label, result, category) {
   appendMetric(commandParts, "--tool-calls", result.toolCount);
   appendMetric(commandParts, "--network-requests", result.networkRequests);
   var command = commandParts.join(" ");
-  var verifyCommand = [
-    "python3 .pi/pentest/swarm.py run-result-get",
-    "--run-id " + quoted(runId),
-    "--category " + quoted(category)
-  ].join(" ");
+  var verifyCommand = "python3 .pi/pentest/swarm.py run-result-get --run-id " + quoted(runId) +
+    " --category " + quoted(category);
   return runs.run("record-" + label, {
     agent: "pentest-run-recorder",
     context: "fresh",
     timeoutMs: 60000,
     outputSchema: recordResult,
     gate: verifyCommand,
-    task: "Run exactly this local command, then return recorded=true, its category, and released count through structured output: " + command
+    task: "Run exactly this local command, then return its recorded/category/released fields: " + command
   });
 }
 
-function runClaudeSlot(slot, generation, consecutiveFailures) {
-  var label = "claude-" + slot + ".gen-" + generation;
-  return runs.run(label, {
-    agent: claudeAgent,
+function rampGate(stage) {
+  var command = "python3 .pi/pentest/swarm.py ramp-status --provider " + quoted(providerKey) +
+    " --stage " + stage + " --wait 120";
+  return runs.run("ramp-" + stage, {
+    agent: "pentest-cohort-selector",
     context: "fresh",
-    timeoutMs: 1800000,
-    acceptance: false,
-    task: claudeTask + " label은 '" + label + "'이다.",
-    control: control
-  }).then(function (result) {
-    var category = terminalCategory(result);
-    if (category === "completed") {
-      return { slot: "claude-" + slot, generation: generation, category: category, runId: result.runId };
-    }
-    return recordTerminal(label, result, category).then(function (recorded) {
-      var receipt = recorded.structuredOutput || {};
-      var recorderOk = recorded.ok === true && receipt.recorded === true && receipt.category === category;
-      var failures = consecutiveFailures + 1;
-      if (!recorderOk || opensCircuit(result, category) || failures >= maxConsecutiveFailures ||
-          generation >= maxClaudeGenerations) {
-        return { slot: "claude-" + slot, generation: generation, category: category, recorderOk: recorderOk, consecutiveFailures: failures };
-      }
-      return runClaudeSlot(slot, generation + 1, failures);
-    });
+    timeoutMs: 180000,
+    outputSchema: rampResult,
+    task: "Run exactly once: " + command +
+      ". Return ready, blocked, readyWork=ready_work, and usefulActions=useful_actions."
   });
 }
 
-function runLunaSlot(slot, generation, consecutiveFailures) {
-  var label = "luna-" + slot + ".gen-" + generation;
-  return runs.run(label, {
-    agent: "pentest-peer-luna",
+function tagFirst(result) { return { source: "first", result: result }; }
+function tagSecond(result) { return { source: "second", result: result }; }
+function tagGate2(result) { return { source: "gate2", result: result }; }
+function tagGate3(result) { return { source: "gate3", result: result }; }
+
+var firstLabel = "peer-1.gen-1";
+var firstPromise = runs.run(firstLabel, {
+  agent: peerAgent,
+  context: "fresh",
+  timeoutMs: 600000,
+  acceptance: false,
+  task: peerTask + " assigned label은 '" + firstLabel + "'이다.",
+  control: control
+});
+var gate2Promise = rampGate(2);
+var firstResult = null;
+var gate2Result = null;
+var race2 = await Promise.race([firstPromise.then(tagFirst), gate2Promise.then(tagGate2)]);
+if (race2.source === "first") {
+  firstResult = race2.result;
+  var earlyCategory = terminalCategory(firstResult);
+  if (earlyCategory !== "completed") {
+    await recordTerminal(firstLabel, firstResult, earlyCategory);
+    gate2Result = await gate2Promise;
+    return {
+      cohortNumber: cohortNumber, peerAgent: peerAgent, providerKey: providerKey,
+      stopped: true, reason: opensCircuit(firstResult, earlyCategory) ? "provider-circuit" : earlyCategory,
+      peers: [{ label: firstLabel, category: earlyCategory, runId: firstResult.runId }]
+    };
+  }
+  gate2Result = await gate2Promise;
+} else {
+  gate2Result = race2.result;
+}
+
+if (!gate2Result.structuredOutput.ready || gate2Result.structuredOutput.blocked) {
+  if (!firstResult) firstResult = await firstPromise;
+  var onlyCategory = terminalCategory(firstResult);
+  if (onlyCategory !== "completed") await recordTerminal(firstLabel, firstResult, onlyCategory);
+  return {
+    cohortNumber: cohortNumber, peerAgent: peerAgent, providerKey: providerKey,
+    stopped: true,
+    reason: gate2Result.structuredOutput.blocked ? "provider-circuit" : "no-grounded-backlog",
+    peers: [{ label: firstLabel, category: onlyCategory, runId: firstResult.runId }]
+  };
+}
+
+var secondLabel = "peer-2.gen-1";
+var secondPromise = runs.run(secondLabel, {
+  agent: peerAgent,
+  context: "fresh",
+  timeoutMs: 600000,
+  acceptance: false,
+  task: peerTask + " assigned label은 '" + secondLabel + "'이다.",
+  control: control
+});
+var gate3Promise = rampGate(3);
+var secondResult = null;
+var gate3Result = null;
+var firstRecorded = false;
+var secondRecorded = false;
+var stopThird = false;
+while (!gate3Result) {
+  var active = [gate3Promise.then(tagGate3)];
+  if (!firstResult) active.push(firstPromise.then(tagFirst));
+  if (!secondResult) active.push(secondPromise.then(tagSecond));
+  var settled = await Promise.race(active);
+  if (settled.source === "gate3") {
+    gate3Result = settled.result;
+  } else if (settled.source === "first") {
+    firstResult = settled.result;
+    var firstEarlyCategory = terminalCategory(firstResult);
+    if (firstEarlyCategory !== "completed") {
+      await recordTerminal(firstLabel, firstResult, firstEarlyCategory);
+      firstRecorded = true;
+      stopThird = true;
+      gate3Result = await gate3Promise;
+    }
+  } else {
+    secondResult = settled.result;
+    var secondEarlyCategory = terminalCategory(secondResult);
+    if (secondEarlyCategory !== "completed") {
+      await recordTerminal(secondLabel, secondResult, secondEarlyCategory);
+      secondRecorded = true;
+      stopThird = true;
+      gate3Result = await gate3Promise;
+    }
+  }
+}
+
+var thirdLabel = null;
+var thirdResult = null;
+if (!stopThird && gate3Result.structuredOutput.ready && !gate3Result.structuredOutput.blocked) {
+  thirdLabel = "peer-3.gen-1";
+  thirdResult = await runs.run(thirdLabel, {
+    agent: peerAgent,
     context: "fresh",
     timeoutMs: 600000,
-    outputSchema: lunaResult,
     acceptance: false,
-    task: lunaTask + " label은 '" + label + "'이다.",
+    task: peerTask + " assigned label은 '" + thirdLabel + "'이다.",
     control: control
-  }).then(function (result) {
-    var category = terminalCategory(result);
-    if (category === "completed") {
-      if (generation >= maxLunaGenerations) {
-        return { slot: "luna-" + slot, generation: generation, category: category, runId: result.runId };
-      }
-      return runLunaSlot(slot, generation + 1, 0);
-    }
-    return recordTerminal(label, result, category).then(function (recorded) {
-      var receipt = recorded.structuredOutput || {};
-      var recorderOk = recorded.ok === true && receipt.recorded === true && receipt.category === category;
-      var failures = consecutiveFailures + 1;
-      if (!recorderOk || opensCircuit(result, category) || failures >= maxConsecutiveFailures ||
-          generation >= maxLunaGenerations) {
-        return { slot: "luna-" + slot, generation: generation, category: category, recorderOk: recorderOk, consecutiveFailures: failures };
-      }
-      return runLunaSlot(slot, generation + 1, failures);
-    });
   });
 }
+if (!firstResult) firstResult = await firstPromise;
+if (!secondResult) secondResult = await secondPromise;
 
-var slots = await Promise.all([
-  runClaudeSlot(1, 1, 0),
-  runClaudeSlot(2, 1, 0),
-  runClaudeSlot(3, 1, 0),
-  runClaudeSlot(4, 1, 0),
-  runClaudeSlot(5, 1, 0),
-  runLunaSlot(1, 1, 0),
-  runLunaSlot(2, 1, 0),
-  runLunaSlot(3, 1, 0)
-]);
-
-return { cohortNumber: cohortNumber, claudeAgent: claudeAgent, slots: slots };
+var firstCategory = terminalCategory(firstResult);
+var secondCategory = terminalCategory(secondResult);
+if (firstCategory !== "completed" && !firstRecorded) await recordTerminal(firstLabel, firstResult, firstCategory);
+if (secondCategory !== "completed" && !secondRecorded) await recordTerminal(secondLabel, secondResult, secondCategory);
+var peers = [
+  { label: firstLabel, category: firstCategory, runId: firstResult.runId },
+  { label: secondLabel, category: secondCategory, runId: secondResult.runId }
+];
+if (thirdResult) {
+  var thirdCategory = terminalCategory(thirdResult);
+  peers.push({ label: thirdLabel, category: thirdCategory, runId: thirdResult.runId });
+  if (thirdCategory !== "completed") await recordTerminal(thirdLabel, thirdResult, thirdCategory);
+}
+return {
+  cohortNumber: cohortNumber, peerAgent: peerAgent, providerKey: providerKey,
+  stopped: stopThird || gate3Result.structuredOutput.blocked,
+  reason: stopThird ? "terminal-failure" :
+    gate3Result.structuredOutput.blocked ? "provider-circuit" :
+    thirdResult ? "ramped-to-three" : "bounded-at-two",
+  peers: peers
+};

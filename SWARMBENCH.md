@@ -9,6 +9,10 @@ snapshot and aggregate budget.
 | `isolated-parallel` | multiple agents, separate ledgers, report-only merge | parallelism gain |
 | `shared-swarm` | multiple agents, one causal ledger | collaboration gain |
 
+Do not launch this comparison until the execution reliability gate passes: atomic assertion completion
+at least 80%, expired claims at most 10%, strict replay errors zero, and a successful two-peer partial-
+takeover drill. This prevents provider/cold-start failure from being mislabeled collaboration quality.
+
 Use identical target snapshot, reset state, credentials, model family, wall-clock budget, aggregate
 model budget, HTTP request budget, and operator ground truth. Run each condition at least three times
 and compare medians. A manifest records those controls; it does not launch agents or reset a target.
@@ -37,8 +41,8 @@ python3 pentest/benchmark.py compare \
 
 Aggregation validates every replay before reading it and emits canonical JSON. It deduplicates
 findings by ledger `dedup_key`, surfaces by canonical key, and applicable checks by
-surface/check pair. It reports finding, validation, communication, claim-lifecycle, provider, and
-usage metrics. Missing provider telemetry stays `null`; SwarmBench never estimates unavailable token,
+surface/check pair. It reports finding, validation, communication, claim-lifecycle, provider,
+durable/completed assertion, stage latency, duplicate HTTP, and usage metrics. Missing provider telemetry stays `null`; SwarmBench never estimates unavailable token,
 tool, request, or cost values.
 
 Operator ground truth is a JSON object with `verified_finding_keys` and `rejected_finding_keys`.
