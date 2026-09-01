@@ -1,7 +1,7 @@
 ---
 name: luna-probe
 description: "Minimal single-task probe agent for Luna refusal-rate experiments. No swarm, no ledger. Execute one bounded HTTP observation and return JSON."
-thinking: high
+thinking: xhigh
 defaultContext: fresh
 ---
 
