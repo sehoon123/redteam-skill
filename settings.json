@@ -2,12 +2,13 @@
   "subagents": {
     "agentOverrides": {
       "pentest-peer": {
-        "model": "ica-se-claude-router/claude-opus-4-8",
+        "model": "ica-services-claude/claude-opus-4-8",
         "thinking": "xhigh",
         "fallbackModels": []
       },
       "pentest-peer-luna": {
-        "model": "ica-se-openai-router/gpt-5.6-luna:xhigh",
+        "model": "ica-services-openai/gpt-5.6-luna",
+        "thinking": "xhigh",
         "fallbackModels": []
       }
     }

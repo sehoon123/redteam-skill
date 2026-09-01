@@ -11,7 +11,7 @@ vulnerable application designed for scanner testing.
 - Initialized an engagement-scoped SQLite ledger and 150-record searchable research index.
 - Launched five identical `pentest-peer` agents simultaneously with no fixed role or phase.
 - Used Claude Opus 4.8 through the exact active registry ID
-  `ica-se-claude-router/claude-opus-4-8`.
+  `ica-services-claude/claude-opus-4-8`.
 
 ## Observed swarm behavior
 
@@ -40,8 +40,8 @@ The live run demonstrated the intended OpenAI/HF-inspired mechanics:
 
 ## Runtime defects discovered and fixed
 
-1. **Wrong model provider ID** — `ica-se-claude/...` was not in the registry. Replaced with
-   `ica-se-claude-router/...`; removed model/tool hard-coding from the agent file.
+1. **Wrong model provider ID** — `ica-services-claude/...` was not in the registry. Replaced with
+   `ica-services-claude/...`; removed model/tool hard-coding from the agent file.
 2. **Empty-ledger false quiescence** — peers could exit before proposing first work. Quiescence
    now requires at least one work item to have existed.
 3. **Advisory JSONL claims** — replaced by `BEGIN IMMEDIATE` work leases with expiry/recovery.
