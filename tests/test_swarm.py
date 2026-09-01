@@ -103,6 +103,7 @@ class CliTest(unittest.TestCase):
         self.assertIn("--continuous", (ROOT / "agents" / "pentest-peer-sonnet.md").read_text())
         self.assertNotIn("--continuous", luna)
         self.assertEqual(1, luna.count('swarm.py next --agent "$AGENT"'))
+        self.assertIn('attempt-add --agent "$AGENT" --work "$WORK"', luna)
 
     def test_proxy_auto_agent_cannot_claim_before_scoped_decision(self):
         creator = self.join("creator")
@@ -209,6 +210,12 @@ class CliTest(unittest.TestCase):
             "next", "--agent", auto_agent, "--wait", 0, "--quiet", 999,
         )
         self.assertEqual("offline-reversing", claimed["key"])
+        offline_result = self.home / "scratch" / "offline-analysis.txt"
+        offline_result.write_text("offline analysis result")
+        self.run_swarm(
+            "artifact-add", "--agent", auto_agent, "--work", claimed["id"],
+            "--path", offline_result,
+        )
         self.run_swarm(
             "done", "--agent", auto_agent, "--work", claimed["id"],
             "--summary", "offline analysis complete",
@@ -316,7 +323,11 @@ class CliTest(unittest.TestCase):
             "request", "--agent", creator, "--work", claimed["id"],
             "--workstream", "order-authz", "--claim", "A second request deduplicates",
             "--subjects", '["surface:GET /orders/{id}"]', "--caused-by", hypothesis["seq"],
-            "--next-actions", '[{"key":"order-fresh-replay","title":"Duplicate replay"}]',
+            "--next-actions", json.dumps([{
+                "key": "order-fresh-replay", "title": "Fresh non-owner replay",
+                "kind": "experiment", "priority": 90, "diversity_key": "fresh-session",
+                "expected_information_gain": .9, "estimated_cost": 1.5,
+            }]),
         )
         self.assertEqual(1, len(duplicate["reused_work"]))
         response = self.run_swarm(
@@ -478,6 +489,342 @@ class CliTest(unittest.TestCase):
         )
         self.assertIn(artifact["sha256"], json.dumps(refreshed_b))
         self.assertEqual(f"event:{request_a['seq']}", brief["current_work"]["caused_by"])
+
+    def test_agent_cannot_hold_multiple_active_claims(self):
+        creator = self.join("claim-creator")
+        worker = self.join("claim-worker")
+        for key in ("claim-one", "claim-two"):
+            self.run_swarm(
+                "task-add", "--agent", creator, "--key", key,
+                "--kind", "analysis", "--title", key, "--workstream", "claims",
+            )
+        first = self.run_swarm(
+            "next", "--agent", worker, "--wait", 0, "--quiet", 999,
+            "--brief", "--brief-tokens", 800,
+        )
+        again = self.run_swarm(
+            "next", "--agent", worker, "--wait", 0, "--quiet", 999,
+            "--brief", "--brief-tokens", 800,
+        )
+        self.assertEqual("claimed", first["status"])
+        self.assertEqual("active-lease", again["status"])
+        self.assertEqual(first["id"], again["id"])
+        self.assertEqual(first["claim_id"], again["claim_id"])
+        self.assertEqual(first["claim_id"], again["brief"]["current_claim"]["id"])
+        conn = sqlite3.connect(self.db())
+        self.assertEqual(1, conn.execute(
+            "SELECT COUNT(*) FROM work_claims WHERE actor_id=? AND ended_at IS NULL", (worker,)
+        ).fetchone()[0])
+        claim_event = conn.execute(
+            "SELECT claim_event FROM work_claims WHERE id=?", (first["claim_id"],)
+        ).fetchone()[0]
+        self.assertEqual(first["claim_id"], conn.execute(
+            "SELECT claim_id FROM events WHERE seq=? AND kind='work.claimed'", (claim_event,)
+        ).fetchone()[0])
+        self.assertEqual(1, conn.execute(
+            "SELECT COUNT(*) FROM work WHERE state='leased' AND owner_id=?", (worker,)
+        ).fetchone()[0])
+        other_work = conn.execute(
+            "SELECT id FROM work WHERE work_key='claim-two'"
+        ).fetchone()[0]
+        with self.assertRaises(sqlite3.IntegrityError):
+            conn.execute(
+                """INSERT INTO work_claims(
+                       engagement_id,work_id,actor_id,generation,claimed_at,lease_until
+                   ) VALUES('TEST-001',?,?,1,0,9999999999)""",
+                (other_work, worker),
+            )
+        conn.close()
+
+    def test_active_claim_is_auto_resolved_by_mutations(self):
+        creator = self.join("auto-provenance-creator")
+        worker = self.join("auto-provenance-worker")
+        self.run_swarm(
+            "task-add", "--agent", creator, "--key", "auto-provenance",
+            "--kind", "analysis", "--title", "auto provenance", "--workstream", "auto",
+        )
+        claimed = self.run_swarm("next", "--agent", worker, "--wait", 0, "--quiet", 999)
+        evidence = self.home / "scratch" / "auto-provenance.txt"
+        evidence.write_text("claim-scoped mutation")
+        artifact = self.run_swarm(
+            "artifact-add", "--agent", worker, "--path", evidence,
+        )
+        self.assertEqual(claimed["claim_id"], artifact["claim_id"])
+        self.run_swarm("surface-add", "--agent", worker, "--path", "/auto-provenance")
+        attempt = self.run_swarm(
+            "attempt-add", "--agent", worker, "--surface", "GET /auto-provenance",
+            "--check", "access-control", "--result", "partial",
+        )
+        assertion = self.run_swarm(
+            "observe", "--agent", worker, "--claim", "Auto-linked observation",
+            "--subjects", '["surface:GET /auto-provenance"]',
+            "--evidence", json.dumps([f"sha256:{artifact['sha256']}"]),
+        )
+        finding = self.run_swarm(
+            "finding-add", "--agent", worker, "--title", "Auto-linked candidate",
+            "--severity", "Low", "--type", "other", "--endpoint", "GET /auto-provenance",
+            "--evidence", evidence,
+        )
+        conn = sqlite3.connect(self.db())
+        self.assertEqual(claimed["claim_id"], conn.execute(
+            "SELECT claim_id FROM attempts WHERE id=?", (attempt["id"],)
+        ).fetchone()[0])
+        self.assertEqual(claimed["claim_id"], conn.execute(
+            "SELECT claim_id FROM events WHERE seq=?", (assertion["seq"],)
+        ).fetchone()[0])
+        self.assertEqual(claimed["claim_id"], conn.execute(
+            "SELECT claim_id FROM findings WHERE id=?", (int(finding["id"].split("-")[1]),)
+        ).fetchone()[0])
+        conn.close()
+
+    def test_legacy_cause_allocates_new_trace(self):
+        agent = self.join("legacy-trace")
+        legacy = self.run_swarm(
+            "emit", "--agent", agent, "--kind", "intel",
+            "--workstream", "legacy-stream", "--body", "legacy source",
+        )
+        typed = self.run_swarm(
+            "hypothesize", "--agent", agent, "--claim", "Legacy fact may generalize",
+            "--subjects", '["surface:GET /legacy"]',
+            "--falsifiers", '["fresh replay differs"]', "--caused-by", legacy["seq"],
+        )
+        self.assertTrue(typed["trace_id"])
+        conn = sqlite3.connect(self.db())
+        parent_trace, child_trace = conn.execute(
+            "SELECT trace_id FROM events WHERE seq IN (?,?) ORDER BY seq",
+            (legacy["seq"], typed["seq"]),
+        ).fetchall()
+        conn.close()
+        self.assertIsNone(parent_trace[0])
+        self.assertEqual(typed["trace_id"], child_trace[0])
+        exported = self.run_swarm(
+            "replay-export", "--strict", "--output", self.home / "board" / "legacy-trace.json",
+        )
+        self.assertEqual([], exported["validation_errors"])
+
+    def test_owned_work_cannot_emit_into_foreign_workstream(self):
+        creator = self.join("stream-owner")
+        worker = self.join("stream-worker")
+        self.run_swarm(
+            "task-add", "--agent", creator, "--key", "stream-bound",
+            "--kind", "hypothesis", "--title", "stream bound", "--workstream", "stream-a",
+        )
+        claimed = self.run_swarm("next", "--agent", worker, "--wait", 0, "--quiet", 999)
+        rejected = self.run_swarm(
+            "hypothesize", "--agent", worker, "--work", claimed["id"],
+            "--workstream", "stream-b", "--claim", "Wrong stream",
+            "--subjects", '["work:1"]', "--falsifiers", '["same stream"]', check=False,
+        )
+        self.assertIn("cannot emit into a different workstream", rejected.stderr)
+        conn = sqlite3.connect(self.db())
+        self.assertEqual(0, conn.execute(
+            "SELECT COUNT(*) FROM events WHERE actor_id=? AND kind='causal.hypothesis'", (worker,)
+        ).fetchone()[0])
+        conn.close()
+
+    def test_decision_cannot_supersede_unrelated_trace(self):
+        agent = self.join("decision-scope")
+        first = self.run_swarm(
+            "hypothesize", "--agent", agent, "--workstream", "decision-stream",
+            "--claim", "First hypothesis", "--subjects", '["surface:GET /x"]',
+            "--falsifiers", '["first false"]',
+        )
+        second = self.run_swarm(
+            "hypothesize", "--agent", agent, "--workstream", "decision-stream",
+            "--claim", "Independent hypothesis", "--subjects", '["surface:GET /x"]',
+            "--falsifiers", '["second false"]',
+        )
+        rejected = self.run_swarm(
+            "decide", "--agent", agent, "--claim", "Invalid cross-trace decision",
+            "--subjects", '["surface:GET /x"]',
+            "--evidence", json.dumps([f"event:{first['seq']}"]),
+            "--caused-by", first["seq"], "--supersedes", second["seq"], check=False,
+        )
+        self.assertIn("share the decision trace", rejected.stderr)
+
+    def test_unknown_evidence_ref_kind_is_rejected(self):
+        agent = self.join("ref-registry")
+        rejected = self.run_swarm(
+            "observe", "--agent", agent, "--workstream", "refs",
+            "--claim", "Unresolvable proof", "--subjects", '["surface:GET /refs"]',
+            "--evidence", '["imaginary-proof:trusted"]', check=False,
+        )
+        self.assertIn("unknown evidence ref type", rejected.stderr)
+
+    def test_duplicate_key_with_different_fingerprint_is_conflict(self):
+        agent = self.join("fingerprint")
+        first = self.run_swarm(
+            "request", "--agent", agent, "--workstream", "fingerprints",
+            "--claim", "Create canonical task", "--subjects", '["surface:GET /fp"]',
+            "--next-actions", '[{"key":"same-key","title":"Replay","kind":"experiment",'
+                              '"payload":{"role":"user"},"diversity_key":"role"}]',
+        )
+        conn = sqlite3.connect(self.db())
+        before_events = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+        before_fingerprint = conn.execute(
+            "SELECT fingerprint FROM work WHERE work_key='same-key'"
+        ).fetchone()[0]
+        conn.close()
+        conflict = self.run_swarm(
+            "request", "--agent", agent, "--workstream", "fingerprints",
+            "--claim", "Conflicting task", "--subjects", '["surface:GET /fp"]',
+            "--next-actions", '[{"key":"same-key","title":"Replay","kind":"experiment",'
+                              '"payload":{"role":"admin"},"diversity_key":"role"}]',
+            check=False,
+        )
+        self.assertIn("work-key-conflict", conflict.stderr)
+        conn = sqlite3.connect(self.db())
+        self.assertEqual(before_events, conn.execute("SELECT COUNT(*) FROM events").fetchone()[0])
+        self.assertEqual(before_fingerprint, conn.execute(
+            "SELECT fingerprint FROM work WHERE work_key='same-key'"
+        ).fetchone()[0])
+        self.assertEqual(first["created_work"][0]["id"], conn.execute(
+            "SELECT id FROM work WHERE work_key='same-key'"
+        ).fetchone()[0])
+        conn.close()
+
+    def test_old_claim_progress_cannot_complete_new_claim(self):
+        creator = self.join("claim-history-creator")
+        worker = self.join("claim-history-worker")
+        self.run_swarm(
+            "task-add", "--agent", creator, "--key", "claim-history",
+            "--kind", "analysis", "--title", "claim history", "--workstream", "claims",
+        )
+        first = self.run_swarm("next", "--agent", worker, "--wait", 0, "--quiet", 999)
+        evidence = self.home / "scratch" / "claim-history.txt"
+        evidence.write_text("first generation evidence")
+        self.run_swarm(
+            "artifact-add", "--agent", worker, "--work", first["id"], "--path", evidence,
+        )
+        self.run_swarm("fail", "--agent", worker, "--work", first["id"])
+        second = self.run_swarm("next", "--agent", worker, "--wait", 0, "--quiet", 999)
+        self.assertNotEqual(first["claim_id"], second["claim_id"])
+        stale = self.run_swarm(
+            "done", "--agent", worker, "--work", second["id"], check=False,
+        )
+        self.assertIn("current claim", stale.stderr)
+        self.run_swarm(
+            "artifact-add", "--agent", worker, "--work", second["id"], "--path", evidence,
+        )
+        done = self.run_swarm("done", "--agent", worker, "--work", second["id"])
+        self.assertEqual("done", done["outcome"])
+        conn = sqlite3.connect(self.db())
+        claims = conn.execute(
+            "SELECT generation,outcome FROM work_claims WHERE work_id=? ORDER BY generation",
+            (first["id"],),
+        ).fetchall()
+        self.assertEqual([(1, "released"), (2, "done")], claims)
+        self.assertEqual(2, conn.execute(
+            "SELECT COUNT(*) FROM work_artifacts WHERE work_id=?", (first["id"],)
+        ).fetchone()[0])
+        conn.close()
+        replay = self.run_swarm(
+            "replay-export", "--strict",
+            "--output", self.home / "board" / "claim-history-replay.json",
+        )
+        self.assertEqual([], replay["validation_errors"])
+
+    def test_coverage_done_requires_current_claim_attempt(self):
+        agent = self.join("coverage-claim")
+        self.run_swarm("surface-add", "--agent", agent, "--path", "/claim-coverage")
+        first = self.run_swarm("next", "--agent", agent, "--wait", 0, "--quiet", 999)
+        self.run_swarm(
+            "attempt-add", "--agent", agent, "--work", first["id"],
+            "--surface", first["payload"]["surface"], "--check", first["payload"]["check"],
+            "--result", "safe",
+        )
+        self.run_swarm("fail", "--agent", agent, "--work", first["id"])
+        second = self.run_swarm("next", "--agent", agent, "--wait", 0, "--quiet", 999)
+        self.assertEqual(first["id"], second["id"])
+        wrong_check = "auth-session" if second["payload"]["check"] == "access-control" else "access-control"
+        self.run_swarm(
+            "attempt-add", "--agent", agent, "--work", second["id"],
+            "--surface", second["payload"]["surface"], "--check", wrong_check,
+            "--result", "safe",
+        )
+        rejected = self.run_swarm(
+            "done", "--agent", agent, "--work", second["id"], check=False,
+        )
+        self.assertIn("current claim", rejected.stderr)
+        self.run_swarm(
+            "attempt-add", "--agent", agent, "--work", second["id"],
+            "--surface", second["payload"]["surface"], "--check", second["payload"]["check"],
+            "--result", "safe",
+        )
+        self.assertEqual("done", self.run_swarm(
+            "done", "--agent", agent, "--work", second["id"],
+        )["state"])
+
+    def test_strict_replay_validates_complete_typed_body(self):
+        agent = self.join("typed-replay")
+        source = self.run_swarm(
+            "emit", "--agent", agent, "--kind", "intel", "--workstream", "typed-replay",
+            "--body", "source",
+        )
+        self.run_swarm(
+            "observe", "--agent", agent, "--workstream", "typed-replay",
+            "--claim", "Typed body is complete", "--subjects", '["surface:GET /typed"]',
+            "--evidence", json.dumps([f"event:{source['seq']}"]),
+        )
+        path = self.home / "board" / "typed-replay.json"
+        self.run_swarm("replay-export", "--strict", "--output", path)
+        payload = json.loads(path.read_text())
+        causal = next(item for item in payload["events"] if item["kind"] == "causal.observation")
+        unknown_payload = json.loads(json.dumps(payload))
+        unknown = next(
+            item for item in unknown_payload["events"] if item["kind"] == "causal.observation"
+        )
+        unknown["evidence_refs"] = ["imaginary-proof:trusted"]
+        unknown["body"]["evidence_refs"] = ["imaginary-proof:trusted"]
+        unknown_path = self.home / "board" / "unknown-proof-replay.json"
+        unknown_path.write_text(json.dumps(unknown_payload))
+        unknown_rejected = subprocess.run(
+            ["python3", str(ROOT / "pentest" / "replay.py"),
+             "--events", str(unknown_path), "--strict"], text=True, capture_output=True,
+        )
+        self.assertNotEqual(0, unknown_rejected.returncode)
+        self.assertIn("unknown evidence ref", unknown_rejected.stderr)
+        causal["body"].pop("conditions")
+        corrupt = self.home / "board" / "typed-body-corrupt.json"
+        corrupt.write_text(json.dumps(payload))
+        rejected = subprocess.run(
+            ["python3", str(ROOT / "pentest" / "replay.py"), "--events", str(corrupt), "--strict"],
+            text=True, capture_output=True,
+        )
+        self.assertNotEqual(0, rejected.returncode)
+        self.assertIn("invalid typed body", rejected.stderr)
+
+    def test_brief_failure_preserves_recoverable_claim(self):
+        creator = self.join("brief-creator")
+        worker = self.join("brief-worker")
+        self.run_swarm(
+            "task-add", "--agent", creator, "--key", "brief-recovery",
+            "--kind", "analysis", "--title", "brief recovery", "--workstream", "brief-recovery",
+        )
+        conn = sqlite3.connect(self.db())
+        conn.execute(
+            "UPDATE workstreams SET current_snapshot_json='{' WHERE canonical_key='brief-recovery'"
+        )
+        conn.commit(); conn.close()
+        failed = self.run_swarm(
+            "next", "--agent", worker, "--wait", 0, "--quiet", 999,
+            "--brief", check=False,
+        )
+        self.assertIn("active claim preserved", failed.stderr)
+        conn = sqlite3.connect(self.db())
+        claim_id = conn.execute(
+            "SELECT id FROM work_claims WHERE actor_id=? AND ended_at IS NULL", (worker,)
+        ).fetchone()[0]
+        conn.execute(
+            "UPDATE workstreams SET current_snapshot_json='{}' WHERE canonical_key='brief-recovery'"
+        )
+        conn.commit(); conn.close()
+        recovered = self.run_swarm(
+            "next", "--agent", worker, "--wait", 0, "--quiet", 999,
+            "--brief", "--brief-tokens", 800,
+        )
+        self.assertEqual("active-lease", recovered["status"])
+        self.assertEqual(claim_id, recovered["claim_id"])
 
     def test_replay_export_is_deterministic_and_strictly_validated(self):
         agent = self.join("replay-agent")
@@ -1021,6 +1368,11 @@ class CliTest(unittest.TestCase):
         self.assertIn("FIND-0001", Path(report["report"]).read_text())
         export = self.run_swarm("export")
         self.assertTrue(Path(export["export"]).is_file())
+        replay_export = self.run_swarm(
+            "replay-export", "--strict",
+            "--output", self.home / "board" / "finding-replay.json",
+        )
+        self.assertEqual([], replay_export["validation_errors"])
 
     def test_solo_finder_reports_verification_blocked(self):
         finder = self.join("solo")
@@ -1091,7 +1443,8 @@ class CliTest(unittest.TestCase):
         )
         self.assertIn("requires attempt-add", premature.stderr)
         self.run_swarm(
-            "attempt-add", "--agent", first, "--surface", one["payload"]["surface"],
+            "attempt-add", "--agent", first, "--work", one["id"],
+            "--surface", one["payload"]["surface"],
             "--check", one["payload"]["check"], "--result", "not-applicable",
         )
         self.assertEqual("done", self.run_swarm(
@@ -1165,6 +1518,12 @@ class CliTest(unittest.TestCase):
         self.assertEqual("resume carry-me from checkpoint A", dossier["completed_cohorts"][0]["summary"]["handoffs"][0]["summary"])
         resumed = self.run_swarm("next", "--agent", second, "--wait", 0, "--quiet", 999)
         self.assertEqual(claimed["key"], resumed["key"])
+        resumed_evidence = self.home / "scratch" / "resumed.txt"
+        resumed_evidence.write_text("fresh-context completion")
+        self.run_swarm(
+            "artifact-add", "--agent", second, "--work", resumed["id"],
+            "--path", resumed_evidence,
+        )
         self.run_swarm("done", "--agent", second, "--work", resumed["id"], "--summary", "completed")
         self.run_swarm("leave", "--agent", second, "--summary", "no remaining leads")
         ended = self.run_swarm("cohort-end", "--reason", "second timebox")
@@ -1191,13 +1550,39 @@ class CliTest(unittest.TestCase):
         conn.execute("DROP TRIGGER events_immutable_delete")
         conn.execute("DROP INDEX events_trace")
         conn.execute("DROP INDEX events_workstream")
+        conn.execute("DROP INDEX events_claim")
         conn.execute("DROP INDEX work_workstream")
+        conn.execute("DROP INDEX one_active_claim_per_actor")
+        conn.execute("DROP INDEX one_active_claim_per_work")
+        conn.execute("DROP INDEX attempts_claim")
+        conn.execute("DROP INDEX findings_claim")
+        conn.execute("DROP INDEX attestations_claim")
+        conn.execute("DROP INDEX work_artifacts_legacy_unique")
         conn.execute("ALTER TABLE agents DROP COLUMN proxy_fail_open")
         conn.execute("ALTER TABLE events DROP COLUMN trace_id")
+        conn.execute("ALTER TABLE events DROP COLUMN claim_id")
         conn.execute("ALTER TABLE work DROP COLUMN diversity_key")
+        conn.execute("ALTER TABLE work DROP COLUMN fingerprint")
         conn.execute("ALTER TABLE attempts DROP COLUMN work_id")
+        conn.execute("ALTER TABLE attempts DROP COLUMN claim_id")
         conn.execute("ALTER TABLE findings DROP COLUMN work_id")
+        conn.execute("ALTER TABLE findings DROP COLUMN claim_id")
         conn.execute("ALTER TABLE attestations DROP COLUMN work_id")
+        conn.execute("ALTER TABLE attestations DROP COLUMN claim_id")
+        conn.executescript("""
+            ALTER TABLE work_artifacts RENAME TO work_artifacts_v351;
+            CREATE TABLE work_artifacts (
+                work_id INTEGER NOT NULL REFERENCES work(id),
+                artifact_id INTEGER NOT NULL REFERENCES artifacts(id),
+                actor_id TEXT NOT NULL REFERENCES agents(id),
+                created_at REAL NOT NULL,
+                PRIMARY KEY(work_id,artifact_id)
+            );
+            INSERT OR IGNORE INTO work_artifacts(work_id,artifact_id,actor_id,created_at)
+            SELECT work_id,artifact_id,actor_id,created_at FROM work_artifacts_v351;
+            DROP TABLE work_artifacts_v351;
+            DROP TABLE work_claims;
+        """)
         conn.commit()
         conn.close()
         dossier = self.run_swarm("dossier")
@@ -1208,13 +1593,25 @@ class CliTest(unittest.TestCase):
         attempt_columns = {row[1] for row in migrated.execute("PRAGMA table_info(attempts)")}
         finding_columns = {row[1] for row in migrated.execute("PRAGMA table_info(findings)")}
         attestation_columns = {row[1] for row in migrated.execute("PRAGMA table_info(attestations)")}
+        work_artifact_columns = {row[1] for row in migrated.execute("PRAGMA table_info(work_artifacts)")}
+        claim_columns = {row[1] for row in migrated.execute("PRAGMA table_info(work_claims)")}
         migrated.close()
         self.assertIn("proxy_fail_open", agent_columns)
         self.assertIn("trace_id", event_columns)
+        self.assertIn("claim_id", event_columns)
         self.assertIn("diversity_key", work_columns)
+        self.assertIn("fingerprint", work_columns)
         self.assertIn("work_id", attempt_columns)
+        self.assertIn("claim_id", attempt_columns)
         self.assertIn("work_id", finding_columns)
+        self.assertIn("claim_id", finding_columns)
         self.assertIn("work_id", attestation_columns)
+        self.assertIn("claim_id", attestation_columns)
+        self.assertIn("claim_id", work_artifact_columns)
+        self.assertEqual(
+            {"id", "engagement_id", "work_id", "actor_id", "generation", "claimed_at",
+             "lease_until", "ended_at", "outcome", "claim_event"}, claim_columns,
+        )
         self.assertEqual(1, dossier["active_cohort"]["number"])
         self.assertEqual(1, dossier["active_cohort"]["joined_peers"])
         self.assertEqual("wait", self.run_swarm(

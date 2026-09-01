@@ -1,7 +1,8 @@
 # Causal Collaboration Protocol
 
-This is the v3.5 foundation for the Evidence-Graph Swarm. SQLite domain tables remain authoritative;
-typed causal events explain why state changed and let fresh peers consume only relevant provenance.
+This is the v3.5.1 causal-integrity foundation for the Evidence-Graph Swarm. SQLite domain tables
+remain authoritative; typed causal events explain why state changed and let fresh peers consume only
+relevant provenance. Evidence Graph entities and adaptive scheduling are still deliberately absent.
 `emit` remains a legacy escape hatch, especially for `task.blocked`.
 
 ## Typed assertion envelope
@@ -36,9 +37,10 @@ python3 .pi/pentest/swarm.py observe \
   --conditions '{"role":"user","owner":"different-account"}'
 ```
 
-Typed refs use `kind:value`, for example `event:81`, `work:42`, `artifact:7`,
-`sha256:<digest>`, `finding:FIND-0007`, `credential:3`, or a future graph ref such as
-`capability:file-read-worker`.
+Typed refs use `kind:value`. `subject_refs` remain extensible for future graph subjects.
+`evidence_refs` are fail-closed and resolve only the registry `sha256`, `artifact`, `event`, `work`,
+`attempt`, `finding`, and `credential`. Unknown proof prefixes are rejected live and during strict
+replay; future graph evidence types must be added explicitly.
 
 ### Hypothesis and falsifier
 
@@ -54,7 +56,10 @@ python3 .pi/pentest/swarm.py hypothesize \
 ### Atomic request → work transition
 
 `request` and `challenge` require at least one structured next action. Event and work creation commit in
-one SQLite transaction; duplicate work keys reuse the existing work rather than spawning a duplicate.
+one SQLite transaction. A canonical fingerprint covers workstream, kind, normalized payload,
+diversity key, gain/cost metadata, revisit trigger, and prerequisites. A duplicate global work key is
+reused only when its fingerprint matches; otherwise the entire transition rolls back with
+`work-key-conflict`.
 
 ```bash
 python3 .pi/pentest/swarm.py request \
@@ -73,9 +78,12 @@ python3 .pi/pentest/swarm.py request \
   }]'
 ```
 
-A `respond` must cause from a request. A `decide` must cause from a challenge or hypothesis and
-supersede an earlier event. `synthesize` requires at least two evidence refs and updates the durable
-workstream snapshot.
+A `respond` must cause from a request. A `decide` must cause from a challenge or hypothesis and may
+supersede only a hypothesis/challenge in the same trace and workstream. Correlation is inherited from
+the cause. Every typed event has a trace; a legacy parent without one starts a new trace while staying
+linked by `causation_id`. An event attached to leased work cannot override that work's stream; branching
+uses `next_actions` to create child work. `synthesize` requires at least two evidence refs and updates
+the durable workstream snapshot.
 
 ## Work metadata
 
@@ -91,6 +99,16 @@ Manual `task-add` also accepts:
 
 The current scheduler still preserves the proven priority/FIFO behavior. These fields are collected
 now so replay can evaluate a later adaptive-frontier policy without changing live scheduling first.
+
+## Claim provenance
+
+Every lease creates a durable `work_claims` generation with its claim event and terminal outcome.
+Partial unique indexes enforce one active claim per actor and one per work. Repeated `next` calls by an
+actor return `active-lease` with the same claim and brief rather than hoarding another task. Expiry,
+`done`, `fail`, refusal, interruption, attestation, cohort end, and leave all close the active claim.
+
+Causal events, work-artifact associations, attempts, findings, and attestations record `claim_id` when
+they mutate leased work. Legacy rows remain nullable rather than receiving invented provenance.
 
 ## Task-local brief
 
@@ -120,13 +138,14 @@ rather than arbitrary string truncation.
 
 ## Progress-bearing completion
 
-Work created from a causal event cannot be marked done using prose alone. It needs at least one:
+Completion reads only progress attached to the **current claim generation**. Execution work needs a
+current-claim artifact, attempt, finding/attestation, or evidence-bearing typed assertion. Planning,
+analysis, research, hypothesis, and synthesis work may also use a current-claim typed knowledge
+assertion. Coverage additionally requires a current-claim attempt for its exact work. One-shot peers
+still require a current-claim artifact.
 
-- registered work artifact
-- work-linked attempt
-- typed assertion whose subjects include that work
-
-This turns a lease heartbeat into preserved collective progress rather than mere activity.
+Evidence from an expired, released, or failed generation cannot complete a later claim. This turns a
+lease heartbeat into preserved collective progress rather than mere activity.
 
 ## Operator-only communication metrics
 
@@ -154,10 +173,11 @@ python3 .pi/pentest/replay.py --events \
   .pi/pentest/engagements/<id>/board/replay.json --policy fifo --strict
 ```
 
-The canonical export contains ordered causal events plus the work/workstream/evidence projection and
-no export timestamp. Repeated exports of one snapshot are byte-identical. Strict validation rejects
-missing or forward causal refs, malformed typed envelopes, unknown evidence refs, invalid response
-or decision ancestry, and broken work provenance. Relational SQLite remains authoritative; this is a
+The canonical export contains ordered causal events, work claims, fingerprints, and the
+work/workstream/evidence projection with no export timestamp. Repeated exports of one snapshot are
+byte-identical. Strict validation reruns typed-body protocol validation and rejects missing or forward
+causal refs, unknown evidence prefixes, invalid response/decision ancestry or supersession scope,
+claim/work/actor mismatches, fingerprint drift, and broken work provenance. Relational SQLite remains authoritative; this is a
 coordination replay, not a claim that secret values or arbitrary target state can be reconstructed.
 
 ## Next Evidence-Graph increments

@@ -42,6 +42,7 @@ Selection이 없으면 legacy single-site layout을 유지한다. 자세한 규�
 ## Authoritative state
 
 선택된 workspace의 `state/<engagement>.sqlite3`만 authoritative. JSONL은 사후 export다.
+`work_claims`의 partial unique index가 actor당, work당 active claim을 각각 하나로 제한한다.
 
 ### Typed causal event
 
@@ -75,8 +76,9 @@ ready ──atomic claim──> leased ──done──> done
   └──── fail/release/lease expiry ────┘
 ```
 
-- `(engagement_id, work_key)` unique: 중복 hypothesis를 자동 병합
+- `(engagement_id, work_key)` unique + structural fingerprint: 같은 task만 재사용하고 충돌은 rollback
 - `BEGIN IMMEDIATE`: 동시에 claim해도 winner는 한 명
+- durable claim generation: 반복 `next`는 새 lease 대신 기존 `active-lease`를 반환
 - lease + heartbeat: 죽은 peer의 작업이 영구 lock되지 않음
 - `forbidden_actor`: finder가 자기 verification work를 claim하지 못함
 - optional parent: prerequisite work가 done일 때만 ready
@@ -113,7 +115,7 @@ check synonym은 canonical name으로 정규화된다. Ready work가 없으면 `
 
 ```
 join → minimal status/proxy decision → atomic next(--brief)
-  if claimed:
+  if claimed or active-lease:
     read only task-local provenance
     execute within scope
     immediately checkpoint artifact/hash + attempt/finding/typed assertion

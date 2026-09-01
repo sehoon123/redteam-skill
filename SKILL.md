@@ -14,7 +14,7 @@ description: |
 OpenAI–Hugging Face 사건에서 실제 성과를 만든 패턴만 안전하게 가져왔다:
 
 - shared message board → SQLite append-only event journal
-- task assignment/subdelegation → peer가 만드는 expiring work lease
+- task assignment/subdelegation → peer가 만드는 expiring work lease + durable claim generation
 - compressed dossier handoff → cohort별 handoff를 포함한 DB-derived dossier
 - scripts/gadgets/files와 target credentials 공유 → artifact/credential registry
 - 독립 reproduction 뒤 collective pivot → 검증 성공 시 follow-up work 자동 활성화
@@ -340,8 +340,8 @@ python3 .pi/pentest/replay.py --events "$PENTEST_BOARD/replay.json" --policy fif
 ```
 
 `report`, legacy-compatible JSONL `export`, canonical replay projection은 선택된 workspace에
-atomic replace로 생성된다. 같은 snapshot의 replay export는 byte-identical하며 causal/evidence
-reference를 strict validation한다.
+atomic replace로 생성된다. 같은 snapshot의 replay export는 byte-identical하며 causal/evidence,
+claim-generation, work-fingerprint reference를 strict validation한다.
 
 ## Prompting discipline
 

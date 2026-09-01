@@ -182,7 +182,7 @@ when a listener is reachable. A reachable listener that returns non-200 remains 
 
 ## Causal protocol and personalized-brief validation — 2026-09-01
 
-The suite now contains 34 passing tests. New deterministic tests cover:
+The v3.5.1 suite contains 45 deterministic tests covering:
 
 - observation → hypothesis → request/response → challenge/decision → synthesis trace inheritance;
 - schema validation for confidence, falsifiers, evidence refs, and typed ancestry;
@@ -194,13 +194,21 @@ The suite now contains 34 passing tests. New deterministic tests cover:
 - aggregate actionability, consumption, unlock, duplicate, herding, and challenge metrics without
   peer points/ranks;
 - byte-identical replay exports, strict causal/evidence validation, and corrupted-replay rejection;
-- additive migration of pre-protocol event/work/attempt/finding/attestation columns.
+- additive migration of pre-protocol event/work/attempt/finding/attestation columns;
+- one active durable claim per actor/work and idempotent `active-lease` recovery;
+- automatic active-claim linkage for artifact, attempt, typed assertion, and finding mutations;
+- current-generation artifact/attempt/assertion completion and stale-generation rejection;
+- legacy-parent trace allocation and leased-work workstream immutability;
+- same-trace/workstream decision supersession and correlation inheritance;
+- fail-closed evidence-prefix resolution and full typed-body replay validation;
+- canonical work fingerprint reuse/conflict rollback;
+- recoverable claim preservation when brief generation fails.
 
-The existing legacy GJ02 ledger was migrated in place and strict-exported without target traffic:
-553 events and 57 work items produced zero replay validation errors. Its communication projection
-correctly reports 104 legacy collaboration events and zero typed events rather than inventing causal
-provenance retroactively.
+The existing legacy GJ02 ledger was migrated in place through v3.5.1 and strict-exported without
+target traffic: 553 events and 57 work items produced zero replay validation errors. It correctly
+exports zero historical claims and reports 104 legacy collaboration events/zero typed events rather
+than inventing claim or causal provenance retroactively.
 
-This is deliberately the replayable v3.5 substrate, not a claim that graph-frontier scheduling is
+This is deliberately the replayable v3.5.1 substrate, not a claim that graph-frontier scheduling is
 already validated. Capability/entity projection and adaptive scheduling remain subsequent changes to
 be evaluated against these exports.

@@ -1,13 +1,14 @@
 # Redteam Skill
 
 Pi용 phase-free multi-agent penetration testing skill. 모든 peer가 동시에 시작해
-transactional ledger에서 스스로 workstream을 만들고 claim·handoff·verify한다. v3.5는
-blackboard 위에 typed causal protocol, task-local brief, deterministic replay를 추가한다.
+transactional ledger에서 스스로 workstream을 만들고 claim·handoff·verify한다. v3.5.1은
+blackboard 위에 typed causal protocol, durable claim provenance, task-local brief,
+deterministic replay를 추가한다.
 
 ## 핵심
 
 - **동일 peer, 고정 역할 없음** — recon/analysis/verification이 동시에 발생
-- **SQLite event + lease ledger** — atomic claim, dead-agent takeover, session reload 복구
+- **SQLite event + claim ledger** — one active claim/actor, generation provenance, dead-agent takeover
 - **Evidence-first findings** — SHA-256 artifact + finder와 다른 peer의 reproduction
 - **Append-only coverage** — 상충 결과와 실패 경로를 덮어쓰지 않음
 - **Model-aware cohorts** — Claude 5개 autonomous slot + Luna 3개 fresh one-shot slot
