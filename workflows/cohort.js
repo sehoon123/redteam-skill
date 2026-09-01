@@ -30,7 +30,7 @@ var peerTask = [
   "completed/error partial_experiments는 기존 evidence를 checkpoint하고, prepared는 exec-http pre-send recovery만 사용하며, sending은 반복하지 마.",
   "결과는 checkpoint 한 번으로 해석, follow-up 생성, work 종료까지 원자적으로 남겨.",
   "provider refusal이나 429는 재시도, paraphrase, resume, reroute, fallback하지 마.",
-  "유한 timeout을 사용하고 종료 전에 leave --summary를 실행해."
+  "유한 timeout을 사용해. 이 cohort에서 8개 claim 완료 또는 7분 중 먼저 도달하면 새 claim을 받지 말고 leave --summary로 종료해."
 ].join(" ");
 
 var recordResult = {

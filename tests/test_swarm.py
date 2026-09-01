@@ -1195,6 +1195,7 @@ class CliTest(unittest.TestCase):
         self.assertNotIn('resume: "previous"', script)
         self.assertEqual(3, script.count("acceptance: false"))
         self.assertIn("timeoutMs: 600000", script)
+        self.assertIn("8개 claim 완료 또는 7분", script)
         self.assertIn('var providerKey = "claude"', script)
         self.assertIn("status --provider", script)
         self.assertIn("function recordTerminal", script)

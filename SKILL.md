@@ -113,7 +113,7 @@ Workflow contract:
 2. 첫 peer 하나만 launch하고 durable useful action과 provider circuit health를 관찰한다.
 3. Durable experiment와 ready backlog가 있을 때 두 번째 peer를 launch한다.
 4. Verify work 또는 서로 다른 grounded workstream이 있을 때만 세 번째 peer를 launch한다.
-5. Target peer 기본값과 최대 동시 assessment peer는 3이다.
+5. Target peer 기본값과 최대 동시 assessment peer는 3이다. 각 peer는 8개 claim 또는 7분에서 새 claim을 멈추고 leave하여 10분 child timeout 전에 durable handoff를 남긴다.
 6. Provider 429는 model ID와 분리된 logical provider key(`claude`)로 15분 global backoff를 열고 새 same-provider launch/replacement를 막는다.
 7. Failed child를 같은 workflow에서 retry/resume/reroute하지 않는다. Fallback model은 없다.
 8. Runtime API가 강제 child kill을 보장하지 않으므로 replacement는 terminal receipt 뒤에만 가능하다;
