@@ -1,8 +1,9 @@
 # Phase-Free Swarm Protocol
 
-모든 peer는 동시에 시작하고 동일한 agent-profile 본문을 사용한다. 역할은 identity가 아니라
-현재 lease한 work의 `kind`다. 한 peer가 discovery, verification, analysis, synthesis를
-모두 수행할 수 있다. Cohort는 phase가 아니라 동일 backlog를 잇는 fresh-context timebox다.
+모든 peer는 동일한 authority와 invariants를 사용한다. 역할은 identity가 아니라 현재
+lease한 work의 `kind`다. 한 peer가 discovery, verification, analysis, synthesis를 모두
+수행할 수 있다. Session lifetime만 모델별로 다르다: Claude는 autonomous loop, Luna는
+fresh context마다 lease 하나. Cohort는 phase가 아니라 동일 backlog를 잇는 timebox다.
 
 ## 사건에서 가져온 것
 
@@ -19,7 +20,7 @@
 | low-budget agents handed off work | cohort summary + lease expiry + fresh-context takeover |
 | trip-wire after origin agent exited | durable local event/artifact state |
 | thousands of failed paths, later revisited | append-only attempt history + follow-up work |
-| new agents rapidly joined dominant workstream | repeated eight-peer cohorts read the same dossier/backlog |
+| new agents rapidly joined dominant workstream | eight concurrent slots; fresh replacements read the same dossier/backlog |
 
 ## 사건에서 가져오지 않은 것
 
@@ -50,6 +51,7 @@ Immutable, ordered, cursor-readable:
 
 Useful kinds: `intel`, `request`, `response`, `challenge`, `extend`, `failure`,
 `task.blocked`. 스키마가 필요한 상태는 free-form event가 아니라 전용 command를 쓴다.
+`agent.*`, `work.*`, `finding.*` 등 system event prefix는 `emit`으로 위조할 수 없다.
 
 ### Work
 
@@ -91,29 +93,23 @@ check synonym은 canonical name으로 정규화된다. Ready work가 없으면 `
 동시에 호출한 peer들은 서로 다른 미시험 조합을 claim한다. 동일 조합의 상충 결과도 모두
 남고 latest view만 matrix에 표시된다. `not-applicable`, `blocked`, `partial`을 명시적으로 기록한다.
 
-## Peer algorithm
+## Atomic peer unit
 
 ```
-join
-cursor = join.cursor
-repeat:
-  read bounded dossier + collaboration inbox(cursor) + shared credentials
-  task = atomic next()  # existing work first, then an auto-materialized coverage gap
-  if task:
+join → bounded dossier/inbox → atomic next()
+  if claimed:
     execute within scope
-    heartbeat while long-running
-    immediately emit messages/artifacts/credentials/surfaces/attempts/findings
-    include distinct follow_ups with a candidate primitive
-    done or fail; never silently abandon
-  else:
-    propose one unexplored hypothesis with canonical key
-  if finding from another peer is ready:
-    reproduce from scratch and attest
-  if a failed path now has a new prerequisite:
-    create a revisit task linked to that evidence
-until quiescent or operator close
+    immediately checkpoint artifact/hash + attempt/finding/message
+    done, fail, or attest; never silently abandon
+  if wait:
+    optionally propose one unexplored hypothesis with canonical key
 leave(summary)
 ```
+
+`join`은 기본 one-shot이다. Claude profile만 `--continuous`를 명시해 atomic unit을
+quiescence/timebox까지 반복한다. Luna profile은 `--one-shot`으로 등록되어 ledger가 두 번째
+lease와 artifact 없는 `done`을 거부하고 unit 하나 뒤 종료한다. Canonical workflow가 같은 Luna slot의 다음 stage를 새 `context: "fresh"` child로 시작한다. 두 방식 모두 동일 backlog에서 어떤 work든 claim하며,
+work 유형에 따른 모델 라우팅이나 역할 제약은 없다.
 
 ## Emergent coordinator
 
@@ -144,12 +140,12 @@ METR 보고서에서 PHASEONE[big]도 전체 assignment 중 약 10%만 보냈다
 
 ## Handoff and recovery
 
-- `init`은 target size 8인 첫 cohort를 시작
+- `init`은 concurrent slot target 8인 첫 cohort를 시작; Luna fresh replacements 때문에 joined actor 수는 8보다 클 수 있음
 - 정상 종료: `leave --summary`가 unresolved leads와 artifact reference를 남기고 lease release
 - provider가 응답 전에 종료하면 parent `postflight.py`가 terminal category를 기록하고 lease release
 - refusal은 기록만 하며 retry/fallback/model reroute하지 않음
 - `cohort-end`: 남은 lease를 ready로 돌리고 peer handoff, run results, cohort delta를 저장
-- `cohort-start --peers 8`: 새 동일-authority peer들이 `join → dossier → inbox → next`로 takeover
+- `cohort-start --peers 8`: canonical workflow의 새 동일-authority slots가 ledger를 takeover
 - crash/session reload: 같은 cohort 안에서는 lease expiry 뒤 resume
 - current scope hash가 DB와 다르면 모든 command fail closed
 
@@ -165,7 +161,7 @@ METR 보고서에서 PHASEONE[big]도 전체 assignment 중 약 10%만 보냈다
 
 Peer는 engagement를 닫지 않는다. Quiescence/timebox에서 `leave --summary`한다. Workflow
 종료 후 parent postflight가 run results와 남은 lease를 정리하고 cohort를 끝낸다. 다음 fresh
-8-peer cohort가 누적 ledger를 이어받는다.
+8-slot canonical cohort가 누적 ledger를 이어받는다.
 
 `close --require-saturation` 조건:
 

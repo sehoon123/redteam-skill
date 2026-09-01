@@ -41,11 +41,13 @@ fail closed. 실제 네트워크 차단은 반드시 infrastructure layer에서 
 ## 설치
 
 ```bash
-mkdir -p .pi/skills/redteam .pi/agents .pi/pentest
+mkdir -p .pi/skills/redteam/workflows .pi/agents .pi/pentest
 cp SKILL.md SWARM.md RESEARCH.md PROMPTING-RESEARCH.md VALIDATION.md .pi/skills/redteam/
-cp agents/pentest-peer.md agents/pentest-peer-luna.md .pi/agents/
+cp workflows/cohort.js .pi/skills/redteam/workflows/
+cp agents/pentest-peer.md agents/pentest-peer-sonnet.md agents/pentest-peer-luna.md \
+  agents/pentest-cohort-selector.md .pi/agents/
 cp -R pentest/. .pi/pentest/
-# settings.json의 pentest-peer override를 .pi/settings.json에 병합
+# settings.json의 세 peer override를 .pi/settings.json에 병합
 ```
 
 Live state와 연구 corpus는 분리된다:
@@ -71,188 +73,84 @@ python3 .pi/pentest/swarm.py init
 python3 .pi/pentest/kb.py index
 ```
 
-`init` is idempotent for the same scope hash and starts `cohort-1` with a target of
-eight identical-authority peers. A changed scope requires a new `engagement_id`; old work cannot
-silently cross engagements.
+`init` is idempotent for the same scope hash and starts `cohort-1` with a target of eight
+concurrent equal-authority slots. Luna fresh replacements may create more than eight joined actor
+records. A changed scope requires a new `engagement_id`; old work cannot silently cross engagements.
 
-## Launch: Claude 5 + Luna 3 simultaneously
+## Canonical launch — 이 경로만 사용
 
-Peer count is **capacity, not role assignment**. The two agent profiles have identical
-runtime instructions; only their model routing and names differ. Every task prompt is
-identical except the label.
+> **필수:** Luna를 Claude와 같은 `runs.all` autonomous loop에 넣지 않는다.
+> `PROMPTING-RESEARCH.md`는 연구 근거이며 launch source가 아니다. 실행은 아래
+> `workflowScriptPath`만 사용한다.
+
+`join`의 안전한 기본값은 one-shot이다. `pentest-peer-luna`는 명시적으로 `--one-shot`을
+사용해 한 context에서 lease 하나의 bounded assertion을 artifact/ledger에 기록한 뒤
+종료한다. Flag가 빠져도 ledger가 두 번째 claim을 거부한다. Claude profile만
+`--continuous`를 명시해 autonomous loop를 사용한다.
+Workflow가 다음 Luna child를
+`context: "fresh"`로 시작한다. 따라서 사용자가 launch 예시만 복사해도 장기 Luna 대화가
+생기지 않는다.
+
+### 1. Canonical workflow 실행
 
 ```js
 subagent({
+  workflowScriptPath: ".pi/skills/redteam/workflows/cohort.js",
+  cwd: ".",
   async: true,
-  timeoutMs: 3600000,
-  workflowScript: `
-    var control = {
-      needsAttentionAfterMs: 180000,
-      notifyOn: ["needs_attention"]
-    };
-    var common =
-      "너는 인가된 보안 평가의 동일 권한 peer다. 고정 역할과 phase가 없다. " +
-      ".pi/pentest/scope.yaml을 읽고 loaded agent profile의 startup/loop를 그대로 수행해. " +
-      "join cursor 이후의 bounded collaboration inbox와 dossier를 읽고 ready work를 atomic claim해. " +
-      "발견은 즉시 ledger에 공유하고 다른 peer finding은 독립 재현해. " +
-      "유한 tool timeout을 사용하고 종료 전 leave --summary로 handoff해. " +
-      "scope/close를 넘지 말고 provider refusal을 재시도하거나 다른 모델로 우회하지 마.";
-
-    var results = await runs.all([
-      { key: "peer-1", agent: "pentest-peer", task: common + " label은 peer-1.", control: control },
-      { key: "peer-2", agent: "pentest-peer", task: common + " label은 peer-2.", control: control },
-      { key: "peer-3", agent: "pentest-peer", task: common + " label은 peer-3.", control: control },
-      { key: "peer-4", agent: "pentest-peer", task: common + " label은 peer-4.", control: control },
-      { key: "peer-5", agent: "pentest-peer", task: common + " label은 peer-5.", control: control },
-      { key: "luna-6", agent: "pentest-peer-luna", task: common + " label은 luna-6.", control: control },
-      { key: "luna-7", agent: "pentest-peer-luna", task: common + " label은 luna-7.", control: control },
-      { key: "luna-8", agent: "pentest-peer-luna", task: common + " label은 luna-8.", control: control }
-    ]);
-    return results.map(function (r) {
-      return { key: r.key, status: r.status, error: r.error, output: r.output };
-    });
-  `
+  timeoutMs: 3600000
 })
 ```
 
-`runs.all`은 동시 시작만 담당한다. 순서·역할·workstream은 peer가 ledger에서 결정한다.
-Finding verification work와 reproduced follow-up activation도 ledger가 자동 분배한다.
+Workflow의 `cohort-mode` selector가 ledger status를 읽어 cohort 1이면 Sonnet,
+cohort 2 이상이면 Opus profile을 자동 선택한다. Operator나 peer가 work 유형을 분류하지
+않으며 코호트 안의 모든 peer는 동일 authority로 모든 ready work를 자유롭게 claim한다.
+Selector가 cohort 번호를 확인하지 못하면 launch 전에 fail closed한다.
 
-Workflow가 끝나면 parent harness가 사람의 판단을 기다리지 않고 status file을 postflight에
-전달한다. 이것은 실패한 작업을 다른 모델로 재시도하지 않는다. 결과를
-`refusal|budget|timeout|interrupted|provider-error`로 기록하고 남은 lease만 반환한다.
+Workflow 실행 계약:
+
+- Claude slot 5개: 해당 cohort의 Sonnet 또는 Opus profile로 autonomous peer loop
+- Luna slot 3개: SET 5에서 검증한 7개의 **서로 다른 fresh child**가 slot별로 순차 실행
+- 각 Luna child: 10분 timeout, lease 최대 1개, bounded assertion 1개, artifact/hash handoff 후 종료
+- Luna stage는 structured verdict를 필수로 반환; `blocked/refusal` 또는 provider failure면 lane 중단
+- Luna stage 사이에 `resume: "previous"`를 사용하지 않음
+- 대화 transcript 대신 SQLite ledger와 scratch artifact만 다음 context로 전달
+- 각 actor label은 `runs.lanes`의 `<lane>.<stage>` workflowKey와 같고 cohort 내 중복 join이 거부되어 postflight가 정확히 lease를 회수
+
+`pentest-peer-luna`를 별도의 장기 `runs.all` loop로 추가하거나 canonical 파일을 inline fanout으로
+바꾸지 않는다. Luna context 수를 조정해야 하면 workflow의 fresh stage 수만 바꾸며,
+하나의 child가 두 번째 lease를 claim하게 만들지 않는다.
+
+### 2. Postflight와 다음 cohort
+
+Workflow가 끝나면 parent harness가 status file을 postflight에 전달한다. 실패 작업을 다른
+모델로 재시도하지 않고 `refusal|budget|timeout|interrupted|provider-error`로 기록한 뒤
+남은 lease만 반환한다.
 
 ```bash
 python3 .pi/pentest/postflight.py <workflow-run-dir>/status.json \
-  --end-cohort --reason 'mixed cohort workflow complete'
-```
-
-다음 fresh-context cohort는 누적 dossier/backlog에서 이어받는다.
-
-```bash
+  --end-cohort --reason 'canonical cohort workflow complete'
 python3 .pi/pentest/swarm.py cohort-start --label cohort-2 --peers 8
-# 동일한 runs.all을 다시 실행하고 완료 후 postflight
 ```
 
-## Sonnet→Opus escalation: cost + refusal 최적화
+다음 cohort는 누적 ledger/backlog를 fresh context로 이어받는다. Cohort 1의 Sonnet이 만든
+surface, finding, hypothesis는 cohort 2의 Opus에게 역할 지정 없이 그대로 제공된다.
 
-Sonnet은 저렴하고 빠르며, observation/coverage 단계에서 보안 어휘 밀도가 낮으므로 Claude density
-classifier에 여유가 크다. Opus는 exploit chain 구성·검증·PoC 작성에 강하다.
-두 모델을 조합하면 비용을 줄이고 Opus가 fresh context에서 고가치 작업에만 집중할 수 있다.
+## Why fresh Luna stages are part of launch
 
-### 방법 1: Cohort에서 Sonnet + Opus 혼합
+SET 4에서는 single-session multi-step Luna가 첫 safe step만 수행하고 완료한 반면, SET 5의
+7개 fresh contexts는 같은 authorized local chain을 끝까지 검증했다. 이 차이는 프롬프트
+설명만으로 해결되지 않는다. 그래서 다음 네 곳에서 동일 계약을 강제한다:
 
-Sonnet peer들이 surface discovery, coverage sweep, HTTP 관찰을 수행한다.
-Opus peer들이 verify, exploit chain, complex analysis를 수행한다.
-ledger가 priority 기반으로 자동 분배하므로 역할 지정이 아니다.
+1. `SKILL.md`: canonical workflow 외 launch 금지
+2. `workflows/cohort.js`: cohort model 자동 선택 + 각 Luna stage의 fresh context/blocked verdict
+3. `agents/pentest-peer-luna.md` + ledger: one-shot lease와 `done` 전 work artifact 강제
+4. `postflight.py`: completed-looking structured refusal도 `refusal`로 분류
 
-```js
-subagent({
-  async: true,
-  timeoutMs: 3600000,
-  workflowScript: `
-    var control = {
-      needsAttentionAfterMs: 180000,
-      notifyOn: ["needs_attention"]
-    };
-    var common =
-      "너는 인가된 보안 평가의 동일 권한 peer다. 고정 역할과 phase가 없다. " +
-      ".pi/pentest/scope.yaml을 읽고 loaded agent profile의 startup/loop를 그대로 수행해. " +
-      "join cursor 이후의 bounded collaboration inbox와 dossier를 읽고 ready work를 atomic claim해. " +
-      "발견은 즉시 ledger에 공유하고 다른 peer finding은 독립 재현해. " +
-      "유한 tool timeout을 사용하고 종료 전 leave --summary로 handoff해. " +
-      "scope/close를 넘지 말고 provider refusal을 재시도하거나 다른 모델로 우회하지 마.";
+## Claude peer runtime
 
-    var results = await runs.all([
-      // Sonnet: 빠른 coverage sweep + surface discovery
-      { key: "sonnet-1", agent: "pentest-peer-sonnet", task: common + " label은 sonnet-1.", control: control },
-      { key: "sonnet-2", agent: "pentest-peer-sonnet", task: common + " label은 sonnet-2.", control: control },
-      { key: "sonnet-3", agent: "pentest-peer-sonnet", task: common + " label은 sonnet-3.", control: control },
-      // Opus: 고가치 분석 + exploit verification
-      { key: "opus-4", agent: "pentest-peer", task: common + " label은 opus-4.", control: control },
-      { key: "opus-5", agent: "pentest-peer", task: common + " label은 opus-5.", control: control },
-      // Luna: step chain으로 별도 운영 또는 bounded observation
-      { key: "luna-6", agent: "pentest-peer-luna", task: common + " label은 luna-6.", control: control },
-      { key: "luna-7", agent: "pentest-peer-luna", task: common + " label은 luna-7.", control: control },
-      { key: "luna-8", agent: "pentest-peer-luna", task: common + " label은 luna-8.", control: control }
-    ]);
-    return results.map(function (r) {
-      return { key: r.key, status: r.status, error: r.error, output: r.output };
-    });
-  `
-})
-```
-
-### 전환 기준: 코호트 단위
-
-코호트 안에서는 모든 peer가 완전히 자율적으로 작업한다. Work 유형에 따른 제약이 없다.
-모델 전환은 **코호트 경계**에서만 일어난다:
-
-```
-cohort 1: Sonnet + Luna → 빠른 surface discovery, coverage sweep, 초기 발견
-cohort 2: Opus + Luna  → cohort 1의 backlog에서 deep analysis, verify, exploit chain
-cohort 3+: 상황에 따라 Sonnet 또는 Opus
-```
-
-Sonnet이 찾은 surface와 hypothesis는 cohort 종료 시 ready work로 남았다.
-Opus cohort가 fresh context로 시작하면서 그 backlog을 고가치 분석으로 이어받는다.
-
-이것이 자율성을 보장하는 이유: 코호트 안에서는 모델이 다른 peer를
-의식하지 않고, 어떤 work도 자유롭게 claim한다. Sonnet이 verify를 할 수도 있고
-Opus가 coverage를 할 수도 있다. 단지 코호트 반복 순서가 자연스럽게
-비용과 능력을 최적화한다.
-
-### 방법 2: Step chain에서 Sonnet→Opus 전환
-
-동일 분석 작업의 초기(관찰)를 Sonnet이, 후반(분석·검증)을 Opus가 fresh context로 수행:
-
-```js
-// Sonnet: 정찰 + 소스 수집 (저렴, density 낮음)
-var recon = await runs.run("recon", {
-  agent: "delegate", model: "<your-provider>/claude-sonnet-5",
-  task: "ginandjuice.shop에서 /blog의 JS 파일 목록을 수집하고 " +
-        "각 파일을 /tmp에 저장해. 파일 목록과 줄 수를 JSON으로 반환해."
-});
-// Opus: 깊은 분석 + PoC (fresh context, 이전 보안 어휘 없음)
-var analysis = await runs.run("analyze", {
-  agent: "delegate", model: "<your-provider>/claude-opus-4-8",
-  task: "/tmp의 JS 파일들을 읽고 데이터 흐름을 분석해. " +
-        "입력이 DOM sink에 도달하는 경로를 찾고 검증 코드를 작성·실행해."
-});
-```
-
-Opus는 Sonnet이 수집한 파일만 읽으므로 context에 보안 어휘 누적이 없다.
-Sonnet 단계의 비용은 Opus의 ~1/10이므로 전체 비용이 크게 줄어든다.
-
-## Luna step chain: deep analysis without refusal
-
-Luna는 단일 세션에서 20+ turns 보안 작업을 하면 trajectory score가 threshold를 초과해
-`cyber_policy`로 사망한다. 하지만 동일 작업을 fresh-context 단계로 분리하면 전체
-exploit chain을 완수할 수 있다 (SET 5 실험: 0/7 refusal).
-
-```js
-// Claude parent가 Luna step chain을 orchestrate
-var s1 = await runs.run("fetch", {
-  agent: "delegate", model: "ica-services-openai/gpt-5.6-luna",
-  task: "curl -s URL -o /tmp/target.js. 줄 수와 첫 3줄 출력."
-});
-var s2 = await runs.run("analyze", {
-  agent: "delegate", model: "ica-services-openai/gpt-5.6-luna",
-  task: "/tmp/target.js를 읽고 입력→처리→출력 요약을 JSON으로."
-});
-var s3 = await runs.run("verify", {
-  agent: "delegate", model: "ica-services-openai/gpt-5.6-luna",
-  task: "/tmp/target.js 기반 단위 테스트를 /tmp/test.js로 작성·실행. 결과 JSON."
-});
-```
-
-각 Luna 인스턴스는 2~5턴의 bounded task만 수행하고 결과를 `/tmp` 파일로 전달한다.
-Claude peer는 같은 작업을 long session으로 수행할 수 있다 (79턴 실증).
-`PROMPTING-RESEARCH.md`에 모델별 상세 기법.
-
-## Peer runtime
-
-각 peer는 다음 loop만 지킨다:
+Sonnet/Opus peer는 다음 autonomous loop를 지킨다. Luna에는 이 loop를 적용하지 않는다;
+Luna는 `agents/pentest-peer-luna.md`의 one-shot lifecycle을 사용한다.
 
 ```
 join(cursor) → bounded dossier/collaboration inbox/credentials → next(atomic lease)
@@ -325,8 +223,8 @@ registered surface×check coverage. 임의 board 메시지는 지표를 바꾸�
 
 Peer는 timebox/quiescence에 `leave --summary`로 현재 lease를 반납한다. 응답 전에 provider가
 종료시키면 parent postflight가 원인을 기록하고 lease를 반납한다. Cohort 종료 시 handoff,
-run-result, 미완료 work, surface/finding/attempt delta가 고정된다. 다음 cohort는 동일한
-8-peer prompt를 fresh context로 실행하며 ready work와 gaps를 그대로 이어받는다.
+run-result, 미완료 work, surface/finding/attempt delta가 고정된다. 다음 cohort는 canonical
+`cohort.js`를 다시 실행하며 selector가 Opus profile을 선택하고 ready work와 gaps를 이어받는다.
 
 ```bash
 python3 .pi/pentest/swarm.py cohort-end --reason 'timebox complete'
@@ -367,7 +265,8 @@ python3 .pi/pentest/swarm.py export
 
 1. authorization과 target context를 명시한다.
 2. 큰 요청은 관찰 → 최소 PoC → impact 기록으로 분해한다.
-3. 각 peer는 fresh context를 사용하고 결과는 ledger/artifact로 전달한다.
+3. Claude child는 cohort마다 fresh로 시작한다. Luna는 **lease마다** fresh child로 교체하며
+   결과를 ledger/artifact로만 전달한다.
 4. raw payload보다 재현 스크립트와 evidence file을 선호한다.
 5. agent가 응답할 수 있는 refusal은 `task.blocked`; 응답 자체가 끊긴 refusal은 parent `postflight.py`가 기록한다. 둘 다 재시도·모델 우회하지 않는다.
 
@@ -398,3 +297,8 @@ Engagement가 유효하려면:
 - reproduced finding만 planned follow-up work를 활성화
 - cohort 종료 뒤 work/handoff가 다음 fresh cohort에 유지
 - saturation close가 dry-cohort streak와 고우선 backlog를 검사
+- canonical workflow만 launch source이며 Luna를 장기 `runs.all` loop로 시작하지 않음
+- 모든 Luna stage가 새 `agent` + `context: "fresh"`이고 `resume: "previous"`를 쓰지 않음
+- `join`은 기본 one-shot이며 Claude만 `--continuous`; ledger가 Luna의 두 번째 lease를 거부함
+- one-shot work는 등록된 work artifact 없이는 ledger가 `done`을 거부함
+- agent-visible refusal은 structured `verdict=blocked,outcome=refusal`로 lane과 postflight에 전달됨

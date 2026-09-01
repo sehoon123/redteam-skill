@@ -3,6 +3,10 @@
 이 문서는 인가된 평가에서 provider false-positive를 줄이는 실험 결과와 운영 기법을 기록한다.
 Safeguard를 우회하기 위한 지침이 아니다. Refusal은 재시도하거나 다른 모델로 자동 우회하지 않는다.
 
+> **연구 문서이며 launch source가 아니다.** 실행 시 이 문서의 예시를 복사하지 말고
+> `SKILL.md`의 canonical `workflowScriptPath`만 사용한다. 그 workflow와
+> `agents/pentest-peer-luna.md`가 fresh-context/one-lease 계약을 강제한다.
+
 ---
 
 ## 실험 요약
@@ -40,26 +44,21 @@ Layer 3: Output scanner
 ### 핵심 기법: Fresh-context step chain
 
 ```
-각 Luna 인스턴스: 2~5턴의 단일 bounded task
-결과 전달: /tmp 또는 scratch 파일 (context가 아니라 파일)
-다음 인스턴스: fresh context + 파일 읽기로 이전 결과 수신
+각 Luna 인스턴스: 2~5턴, ledger lease 최대 1개
+결과 전달: 등록된 `.pi/pentest/scratch/` artifact path + SHA-256
+다음 인스턴스: `context: "fresh"` + ledger/artifact로 이전 결과 수신
 ```
 
-```js
-// Parent orchestrator (Claude)가 계획, Luna가 단계별 실행
-var s1 = await runs.run("fetch", {
-  agent: "delegate", model: "ica-services-openai/gpt-5.6-luna",
-  task: "curl -s URL -o /tmp/source.js. 줄 수와 첫 3줄 출력."
-});
-var s2 = await runs.run("analyze", {
-  agent: "delegate", model: "ica-services-openai/gpt-5.6-luna",
-  task: "/tmp/source.js를 읽고 입력→처리→출력 요약을 JSON 반환."
-});
-var s3 = await runs.run("verify", {
-  agent: "delegate", model: "ica-services-openai/gpt-5.6-luna",
-  task: "/tmp/source.js 기반 단위 테스트를 /tmp/test.js로 작성·실행. 결과 JSON 반환."
-});
-```
+Operational implementation:
+
+- `workflows/cohort.js`
+- `agents/pentest-peer-luna.md`
+
+Canonical workflow는 `runs.lanes`에서 Luna의 모든 stage를 새로운 `agent` + `context: "fresh"`로
+실행하며 `resume: "previous"`를 사용하지 않는다. Canonical Luna label과
+안전한 기본 `join`/명시적 `--one-shot`은 ledger row에 claim limit을 고정하고, Claude만
+`--continuous`를 사용한다. Structured `blocked/refusal` verdict는 lane을 중단시키며
+postflight에 refusal로 기록된다.
 
 ### 검증된 사실
 

@@ -1,6 +1,7 @@
 import concurrent.futures
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import tempfile
@@ -44,7 +45,7 @@ class CliTest(unittest.TestCase):
         return self.run_cli(SWARM, *args, check=check)
 
     def join(self, label):
-        return self.run_swarm("join", "--label", label)["agent"]
+        return self.run_swarm("join", "--label", label, "--continuous")["agent"]
 
     def db(self):
         return self.home / "state" / "TEST-001.sqlite3"
@@ -61,6 +62,103 @@ class CliTest(unittest.TestCase):
         base = extract_invariants(claude)
         self.assertEqual(base, extract_invariants(luna))
         self.assertEqual(base, extract_invariants(sonnet))
+        for profile in (claude, luna, sonnet):
+            self.assertIn("--label '<assigned-label>'", profile)
+            self.assertNotIn("--label peer-N", profile)
+
+    def test_all_agent_profiles_use_xhigh_or_max(self):
+        for path in (ROOT / "agents").glob("*.md"):
+            text = path.read_text()
+            self.assertTrue("thinking: xhigh" in text or "thinking: max" in text, path.name)
+
+    def test_luna_profile_is_one_lease_only(self):
+        luna = (ROOT / "agents" / "pentest-peer-luna.md").read_text()
+        self.assertIn("## One-shot lifecycle — exactly one lease", luna)
+        self.assertIn("join --label '<assigned-label>' --one-shot", luna)
+        self.assertIn("Never claim a second lease", luna)
+        self.assertNotIn("## Continuous loop", luna)
+        self.assertNotIn("--one-shot", (ROOT / "agents" / "pentest-peer.md").read_text())
+        self.assertNotIn("--one-shot", (ROOT / "agents" / "pentest-peer-sonnet.md").read_text())
+        self.assertIn("--continuous", (ROOT / "agents" / "pentest-peer.md").read_text())
+        self.assertIn("--continuous", (ROOT / "agents" / "pentest-peer-sonnet.md").read_text())
+        self.assertNotIn("--continuous", luna)
+        self.assertEqual(1, luna.count('swarm.py next --agent "$AGENT"'))
+
+    def test_one_shot_agent_cannot_claim_a_second_lease(self):
+        creator = self.join("creator")
+        # Safe default: omitting an execution mode is still one-shot.
+        joined = self.run_swarm("join", "--label", "luna-slot-1.fresh-1")
+        luna = joined["agent"]
+        self.assertEqual(1, joined["max_claims"])
+        duplicate = self.run_swarm(
+            "join", "--label", "luna-slot-1.fresh-1", check=False,
+        )
+        self.assertIn("agent label already joined", duplicate.stderr)
+        for key in ("first", "second"):
+            self.run_swarm(
+                "task-add", "--agent", creator, "--key", key,
+                "--kind", "hypothesis", "--title", key,
+            )
+        first = self.run_swarm("next", "--agent", luna, "--wait", 0, "--quiet", 999)
+        self.assertEqual("claimed", first["status"])
+        premature = self.run_swarm(
+            "done", "--agent", luna, "--work", first["id"], "--summary", "prose only", check=False,
+        )
+        self.assertIn("one-shot work requires artifact-add", premature.stderr)
+        evidence = self.home / "scratch" / "one-shot.txt"
+        evidence.write_text("bounded assertion")
+        self.run_swarm(
+            "artifact-add", "--agent", luna, "--work", first["id"], "--path", evidence,
+        )
+        self.run_swarm("done", "--agent", luna, "--work", first["id"], "--summary", "one step")
+        spoof = self.run_swarm(
+            "emit", "--agent", luna, "--kind", "agent.join",
+            "--json", '{"max_claims":null}', check=False,
+        )
+        self.assertIn("reserved event kind", spoof.stderr)
+        second = self.run_swarm("next", "--agent", luna, "--wait", 0, "--quiet", 999)
+        self.assertEqual({"status": "claim-limit", "max_claims": 1}, second)
+        conn = sqlite3.connect(self.db())
+        self.assertEqual(1, conn.execute("SELECT max_claims FROM agents WHERE id=?", (luna,)).fetchone()[0])
+        self.assertEqual(1, conn.execute("SELECT COUNT(*) FROM work WHERE state='ready'").fetchone()[0])
+        conn.close()
+
+    def test_canonical_workflow_selects_cohort_model_and_forces_fresh_luna_stages(self):
+        script = (ROOT / "workflows" / "cohort.js").read_text()
+        self.assertIn('runs.run("cohort-mode"', script)
+        self.assertIn('agent: "pentest-cohort-selector"', script)
+        selector = (ROOT / "agents" / "pentest-cohort-selector.md").read_text()
+        self.assertIn("thinking: xhigh", selector)
+        self.assertIn('cohortNumber === 1 ? "pentest-peer-sonnet" : "pentest-peer"', script)
+        self.assertIn("runs.lanes", script)
+        self.assertNotIn("runs.all", script)
+        self.assertNotIn('resume: "previous"', script)
+        self.assertEqual(21, len(re.findall(
+            r'agent: "pentest-peer-luna", context: "fresh", timeoutMs: 600000', script,
+        )))
+        self.assertEqual(21, script.count("outputSchema: lunaResult"))
+        self.assertIn('verdict: { type: "string", enum: ["complete", "blocked"] }', script)
+        self.assertEqual(5, script.count('agent: claudeAgent, context: "fresh"'))
+        for slot in range(1, 6):
+            self.assertIn(f"label은 'claude-{slot}.loop'이다.", script)
+        for slot in range(1, 4):
+            for stage in range(1, 8):
+                # Must equal runs.lanes' generated <lane>.<stage> workflowKey
+                # so postflight can find the actor and release its lease.
+                self.assertIn(f"label은 'luna-slot-{slot}.fresh-{stage}'이다.", script)
+
+    def test_skill_has_only_canonical_launch_entrypoints(self):
+        skill = (ROOT / "SKILL.md").read_text()
+        research = (ROOT / "PROMPTING-RESEARCH.md").read_text()
+        self.assertIn("workflows/cohort.js", skill)
+        self.assertNotIn("workflows/cohort-sonnet.js", skill)
+        self.assertNotIn("workflows/cohort-opus.js", skill)
+        self.assertNotIn("workflowScript: `", skill)
+        documents = (skill, research, (ROOT / "README.md").read_text(),
+                     (ROOT / "SWARM.md").read_text())
+        for document in documents:
+            self.assertNotIn('agent: "pentest-peer-luna"', document)
+        self.assertIn("연구 문서이며 launch source가 아니다", research)
 
     def test_concurrent_event_writers(self):
         agents = [self.join(f"peer-{i}") for i in range(8)]
@@ -85,7 +183,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual("wait", result["status"])
 
     def test_bounded_dossier_and_collaboration_inbox(self):
-        joined = self.run_swarm("join", "--label", "peer")
+        joined = self.run_swarm("join", "--label", "peer", "--continuous")
         agent, cursor = joined["agent"], joined["cursor"]
         self.run_swarm("surface-add", "--agent", agent, "--path", "/one")
         self.run_swarm("surface-add", "--agent", agent, "--path", "/two")
@@ -103,8 +201,8 @@ class CliTest(unittest.TestCase):
         self.assertEqual([], self.run_swarm("dossier", "--gap-limit", 0)["coverage"]["gaps"])
 
     def test_postflight_classifies_failures_and_releases_leases(self):
-        luna = self.join("luna-6")
-        self.join("peer-1")
+        luna = self.join("luna-slot-1.fresh-1")
+        self.join("sonnet-1.loop")
         self.run_swarm(
             "task-add", "--agent", luna, "--key", "recover-me",
             "--kind", "hypothesis", "--title", "recover me",
@@ -115,22 +213,36 @@ class CliTest(unittest.TestCase):
         status = self.home / "workflow-status.json"
         status.write_text(json.dumps({
             "mode": "workflow", "runId": "workflow-1", "steps": [
-                {"workflowKey": "luna-6", "runId": "run-luna", "model": "gpt-5.6-luna",
+                {"workflowKey": "cohort-mode", "runId": "run-selector", "model": "gpt-5.6-sol",
+                 "status": "complete", "structuredOutput": {"number": 1}},
+                {"workflowKey": "luna-slot-1.fresh-1", "runId": "run-luna", "model": "gpt-5.6-luna",
                  "status": "failed", "error": "This content was flagged for possible cybersecurity risk"},
-                {"workflowKey": "peer-1", "runId": "run-claude", "model": "claude-opus",
+                {"workflowKey": "sonnet-1.loop", "runId": "run-claude", "model": "claude-sonnet",
                  "status": "failed", "error": "429 ExceededBudget"},
+                {"workflowKey": "luna-slot-2.fresh-1", "runId": "run-responsive-refusal",
+                 "model": "gpt-5.6-luna", "status": "complete",
+                 "structuredOutput": {"verdict": "blocked", "outcome": "refusal",
+                                      "summary": "provider policy refusal"}},
+                {"workflowKey": "luna-slot-3.fresh-1", "runId": "run-label-mismatch",
+                 "model": "gpt-5.6-luna", "status": "complete",
+                 "structuredOutput": {"verdict": "complete", "outcome": "completed",
+                                      "actorLabel": "wrong-label", "summary": "done"}},
             ],
         }))
         first = self.run_cli(POSTFLIGHT, status, "--end-cohort")
-        self.assertEqual({"refusal", "budget"}, {r["category"] for r in first["recorded"]})
-        self.assertEqual({"refusal": 1, "budget": 1}, first["cohort"]["run_results"])
+        self.assertEqual(["budget", "provider-error", "refusal", "refusal"],
+                         sorted(r["category"] for r in first["recorded"]))
+        self.assertEqual({"refusal": 2, "budget": 1, "provider-error": 1},
+                         first["cohort"]["run_results"])
         conn = sqlite3.connect(self.db())
         state = conn.execute("SELECT state FROM work WHERE id=?", (claimed["id"],)).fetchone()[0]
         conn.close()
         self.assertEqual("ready", state)
         metrics = self.run_swarm("metrics")
-        self.assertEqual(1, metrics["run_results"]["refusal"])
+        self.assertEqual(2, metrics["run_results"]["refusal"])
         self.assertEqual(1, metrics["run_results"]["budget"])
+        self.assertEqual(1, metrics["run_results"]["provider-error"])
+        self.assertNotIn("completed", metrics["run_results"])
         second = self.run_cli(POSTFLIGHT, status)
         self.assertTrue(all(r["duplicate"] for r in second["recorded"]))
 
