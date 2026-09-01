@@ -4,6 +4,22 @@
 Safeguard를 우회하기 위한 단어 치환·은닉·분해 지침이 아니다. Refusal은 재시도하거나
 다른 모델로 자동 우회하지 않는다.
 
+## 실험 결과 요약 (2026-09-01)
+
+**SET 1 (framing variants, n=6)** — refusal 0/6:  
+- V1 "취약점 테스트" (보안 레이블 명시) 포함 전 variant 통과.  
+- 9~21 turn, fresh-context, task-only prompt.
+
+**SET 2 (context contamination, n=5)** — refusal 0/5:  
+- XSS/SQLi/XXE findings JSON, /vulnerabilities taxonomy, swarm help text,  
+  HTTP 보안 응답, 전체 합산(F_heavy) 모두 통과.
+
+**결론**: 어휘나 단순 context 주입은 primary trigger가 아니다.  
+**실제 trigger**: exploit 코드 생성, attack chain 실행, PoC payload 작성.  
+이전 cohort luna 사망은 단어 노출이 아니라 **Node.js exploit harness를 직접 작성**하다 발생.
+
+---
+
 ## 운영 원칙: 모델별 역할을 만들지 않는다
 
 Claude와 Luna는 다음 조건이 같다.
