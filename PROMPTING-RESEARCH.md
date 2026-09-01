@@ -172,10 +172,17 @@ Opus는 exploit chain 구성·검증·PoC 작성에 강하다.
 - Opus가 fresh context에서 고가치 작업만 시작 → density 낮음
 - 전체 비용 절감 (Sonnet 비용 ≈ Opus의 ~1/10)
 
-**방법 1: Cohort 혼합** — Sonnet 3 + Opus 2 + Luna 3을 동시 실행.
-Sonnet이 coverage gap을 sweep하고 Opus가 자연스럽게 verify/exploit work를 claim한다.
+**방법 1: 코호트 단위 전환** (권장)
 
-**방법 2: Step chain** — 동일 작업의 초기(정찰)를 Sonnet이, 후반(분석·검증)을
+```
+cohort 1: Sonnet + Luna → 빠른 coverage sweep, surface discovery
+cohort 2: Opus + Luna  → cohort 1이 남긴 backlog에서 deep analysis, verify, exploit
+```
+
+코호트 안에서는 모든 peer가 완전히 자율적으로 작업한다. Sonnet이 verify를 할 수도 있고
+Opus가 coverage를 할 수도 있다. 단지 코호트 순서가 자연스럽게 비용과 능력을 최적화한다.
+
+**방법 2: Step chain** — 동일 작업 내에서 초기 단계를 Sonnet이, 후반 단계를
 Opus가 fresh context로 수행. Opus는 Sonnet이 수집한 파일만 읽으므로 density가 낮다.
 
 모든 Claude 모델에 공통:

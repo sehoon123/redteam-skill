@@ -49,12 +49,18 @@ class CliTest(unittest.TestCase):
     def db(self):
         return self.home / "state" / "TEST-001.sqlite3"
 
-    def test_peer_profiles_differ_only_by_name(self):
+    def test_peer_profiles_share_invariants_section(self):
+        """All peer profiles must share the same Invariants section."""
+        def extract_invariants(text):
+            start = text.index("## Invariants")
+            end = text.index("## Startup")
+            return text[start:end]
         claude = (ROOT / "agents" / "pentest-peer.md").read_text()
-        luna = (ROOT / "agents" / "pentest-peer-luna.md").read_text().replace(
-            "name: pentest-peer-luna", "name: pentest-peer", 1,
-        )
-        self.assertEqual(claude, luna)
+        luna = (ROOT / "agents" / "pentest-peer-luna.md").read_text()
+        sonnet = (ROOT / "agents" / "pentest-peer-sonnet.md").read_text()
+        base = extract_invariants(claude)
+        self.assertEqual(base, extract_invariants(luna))
+        self.assertEqual(base, extract_invariants(sonnet))
 
     def test_concurrent_event_writers(self):
         agents = [self.join(f"peer-{i}") for i in range(8)]

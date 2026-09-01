@@ -183,8 +183,24 @@ subagent({
 })
 ```
 
-Sonnet이 surface를 발견하면 ledger에 등록되고, 그 surface에 대한 check work가 자동 생성된다.
-Opus가 priority가 높은 verify/exploit work를 claim하고, Sonnet이 남은 coverage gap을 sweep한다.
+### 전환 기준: 코호트 단위
+
+코호트 안에서는 모든 peer가 완전히 자율적으로 작업한다. Work 유형에 따른 제약이 없다.
+모델 전환은 **코호트 경계**에서만 일어난다:
+
+```
+cohort 1: Sonnet + Luna → 빠른 surface discovery, coverage sweep, 초기 발견
+cohort 2: Opus + Luna  → cohort 1의 backlog에서 deep analysis, verify, exploit chain
+cohort 3+: 상황에 따라 Sonnet 또는 Opus
+```
+
+Sonnet이 찾은 surface와 hypothesis는 cohort 종료 시 ready work로 남았다.
+Opus cohort가 fresh context로 시작하면서 그 backlog을 고가치 분석으로 이어받는다.
+
+이것이 자율성을 보장하는 이유: 코호트 안에서는 모델이 다른 peer를
+의식하지 않고, 어떤 work도 자유롭게 claim한다. Sonnet이 verify를 할 수도 있고
+Opus가 coverage를 할 수도 있다. 단지 코호트 반복 순서가 자연스럽게
+비용과 능력을 최적화한다.
 
 ### 방법 2: Step chain에서 Sonnet→Opus 전환
 
