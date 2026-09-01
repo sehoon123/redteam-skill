@@ -26,7 +26,7 @@ var claudeTask = [
   "고정 역할과 phase 없이 loaded agent profile의 autonomous loop를 수행해.",
   "engagement_env.sh를 source하고 선택된 engagement의 scope/ledger/scratch만 authoritative state로 사용해. 다른 engagement directory를 읽거나 쓰지 마.",
   "PROXY.md의 auto policy를 따라 proxy-check해. proxy가 reachable이면 모든 curl/Python/browser target traffic에 명시적으로 사용하고, unavailable이면 ledger warning을 남긴 뒤 direct/offline mode로 계속해.",
-  "발견은 즉시 공유하고 독립 재현하며, 유한 tool timeout을 사용해.",
+  "next --brief로 task-local provenance만 읽고, 발견은 typed causal command로 공유·독립 재현하며 유한 tool timeout을 사용해.",
   "종료 전 leave --summary로 handoff해.",
   "provider refusal은 재시도하거나 다른 모델로 우회하지 마."
 ].join(" ");
@@ -36,7 +36,7 @@ var lunaTask = [
   "loaded pentest-peer-luna profile의 one-shot lifecycle을 그대로 수행해.",
   "engagement_env.sh를 source하고 선택된 engagement의 scope/ledger/scratch만 사용해. 다른 engagement directory를 읽거나 쓰지 마.",
   "PROXY.md의 auto policy를 따라 proxy-check해. proxy가 reachable이면 모든 curl/Python/browser target traffic에 명시적으로 사용하고, unavailable이면 ledger warning을 남긴 뒤 direct/offline mode로 계속해.",
-  "ready work를 최대 한 번 claim하고 한 bounded assertion만 실행해.",
+  "next --brief로 ready work를 최대 한 번 claim하고 한 bounded assertion을 typed causal checkpoint로 남겨.",
   "결과를 scratch artifact와 ledger에 checkpoint하고 done/fail/attest한 뒤 leave해.",
   "join --one-shot을 사용해. ledger가 두 번째 lease를 거부하므로 continuous loop를 시작하지 마.",
   "다음 fresh context는 오직 ledger의 artifact path와 SHA-256으로 이어받는다.",

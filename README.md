@@ -1,7 +1,8 @@
 # Redteam Skill
 
 Pi용 phase-free multi-agent penetration testing skill. 모든 peer가 동시에 시작해
-transactional ledger에서 스스로 workstream을 만들고 claim·handoff·verify한다.
+transactional ledger에서 스스로 workstream을 만들고 claim·handoff·verify한다. v3.5는
+blackboard 위에 typed causal protocol, task-local brief, deterministic replay를 추가한다.
 
 ## 핵심
 
@@ -11,7 +12,7 @@ transactional ledger에서 스스로 workstream을 만들고 claim·handoff·ver
 - **Append-only coverage** — 상충 결과와 실패 경로를 덮어쓰지 않음
 - **Model-aware cohorts** — Claude 5개 autonomous slot + Luna 3개 fresh one-shot slot
 - **Automatic collective pivot** — 미시험 coverage claim, 독립 재현 후 follow-up 활성화
-- **Dossier handoff** — 새 peer가 이전 chat 없이 현재 상태를 즉시 복구
+- **Task-local handoff** — 새 peer가 이전 chat이나 unrelated workstream 없이 provenance 복구
 - **한국어 KB 검색** — FTS5 trigram + structured JSONL normalization
 - **No live bounty** — reward hacking 대신 operator-only evidence metrics
 - **Fresh-context Luna chain** — 3개 slot × 7개 one-lease child, artifact로만 handoff
@@ -19,6 +20,9 @@ transactional ledger에서 스스로 workstream을 만들고 claim·handoff·ver
 - **Proxy auto policy** — reachable이면 강제 사용, unavailable이면 경고 후 direct/offline 진행
 - **Site isolation** — scope/DB/evidence/report/KB를 engagement workspace별 분리
 - **Zero-admin bootstrap** — `/redteam <URL>`이 site create/select/init를 자동 처리
+- **Typed causal protocol** — observation→hypothesis→experiment의 trace/evidence/confidence 보존
+- **Task-local brief** — fresh peer가 unrelated global history 대신 claimed work provenance만 로드
+- **Deterministic replay** — canonical replay export와 operator-only communication metrics
 
 설계 근거: `RESEARCH.md` (OpenAI technical report, METR, Hugging Face timeline,
 Black Hat 발표). Runtime 규약: `SWARM.md`. 프롬프팅 실험: `PROMPTING-RESEARCH.md`.
@@ -33,6 +37,7 @@ Black Hat 발표). Runtime 규약: `SWARM.md`. 프롬프팅 실험: `PROMPTING-R
 ├── PROMPTING-RESEARCH.md
 ├── PROXY.md
 ├── WORKSPACES.md
+├── CAUSAL-PROTOCOL.md
 ├── VALIDATION.md
 ├── settings.json
 ├── agents/pentest-peer.md          # Opus autonomous loop
@@ -46,6 +51,7 @@ Black Hat 발표). Runtime 규약: `SWARM.md`. 프롬프팅 실험: `PROMPTING-R
 │   ├── swarm.py
 │   ├── postflight.py          # parent-side terminal-result/lease recovery
 │   ├── kb.py
+│   ├── protocol.py / replay.py
 │   ├── active-engagement
 │   ├── engagements/<id>/
 │   │   ├── scope.yaml
@@ -59,7 +65,7 @@ Black Hat 발표). Runtime 규약: `SWARM.md`. 프롬프팅 실험: `PROMPTING-R
 
 ```bash
 mkdir -p .pi/skills/redteam/workflows .pi/agents .pi/pentest
-cp SKILL.md SWARM.md RESEARCH.md PROMPTING-RESEARCH.md PROXY.md WORKSPACES.md VALIDATION.md .pi/skills/redteam/
+cp SKILL.md SWARM.md RESEARCH.md PROMPTING-RESEARCH.md PROXY.md WORKSPACES.md CAUSAL-PROTOCOL.md VALIDATION.md .pi/skills/redteam/
 cp workflows/cohort.js .pi/skills/redteam/workflows/
 cp agents/pentest-peer.md agents/pentest-peer-sonnet.md agents/pentest-peer-luna.md \
   agents/pentest-cohort-selector.md agents/pentest-run-recorder.md agents/luna-probe.md .pi/agents/
@@ -121,7 +127,8 @@ Provider ID 확인 방법:
    꺼져 있으면 ledger warning 후 direct/offline mode로 계속한다. Strict 모드는
    `PENTEST_PROXY_POLICY=required`; Python/browser 설정은 `PROXY.md`를 따른다.
 5. `SKILL.md`의 단일 `.pi/skills/redteam/workflows/cohort.js` entrypoint를 실행한다.
-   Workflow가 cohort 1은 Sonnet, cohort 2+는 Opus로 자동 선택한다.
+   Workflow가 cohort 1은 Sonnet, cohort 2+는 Opus로 자동 선택한다. Peer는
+   `next --brief`로 task-local context를 받고 typed causal command로 collective state를 갱신한다.
 6. Luna를 별도 `runs.all` 장기 loop에 넣지 않는다. Canonical workflow가 3개 Luna slot을
    fresh one-shot child로 교체한다. `join`은 기본 one-shot이고 Claude만 `--continuous`를
    사용한다. Ledger는 Luna의 두 번째 lease와 artifact 없는 `done`을 거부한다. Terminal child는
@@ -146,8 +153,9 @@ Expired lease가 자동 회수되어 새 peer가 이어서 수행한다.
 python3 -m unittest -v tests/test_swarm.py
 ```
 
-검증 범위: concurrent event writes, atomic coverage claims, lease/cohort takeover,
-independent attestation-triggered pivots, saturation, scope hash fail-closed, Korean search.
+검증 범위: concurrent event writes, atomic claims, lease/cohort takeover, independent attestation,
+typed causal transitions, task-local isolation, immutable events, deterministic replay, proxy policy,
+workspace isolation, saturation, scope hash fail-closed, Korean search.
 
 ## License
 

@@ -74,6 +74,9 @@ class CliTest(unittest.TestCase):
             self.assertIn("engagement_env.sh", profile)
             self.assertIn("PENTEST_SCRATCH", profile)
             self.assertIn("proxy-check", profile)
+            self.assertIn("next --agent \"$AGENT\"", profile)
+            self.assertIn("--brief", profile)
+            self.assertIn("typed", profile.lower())
             self.assertIn("When `PENTEST_NETWORK_MODE=proxy`", profile)
             self.assertNotIn("--label peer-N", profile)
 
@@ -265,6 +268,260 @@ class CliTest(unittest.TestCase):
             "proxy-mode", "--agent", off["agent"],
         )["network_mode"])
 
+    def test_typed_causal_protocol_links_work_confidence_and_metrics(self):
+        creator = self.join("causal-creator")
+        responder = self.join("causal-responder")
+        root = self.run_swarm(
+            "task-add", "--agent", creator, "--key", "order-root",
+            "--kind", "hypothesis", "--title", "Order boundary experiment",
+            "--workstream", "order-authz", "--diversity-key", "owner-boundary",
+            "--information-gain", .8,
+        )
+        claimed = self.run_swarm(
+            "next", "--agent", creator, "--wait", 0, "--quiet", 999,
+        )
+        self.assertEqual(root["id"], claimed["id"])
+        evidence_path = self.home / "scratch" / "causal.txt"
+        evidence_path.write_text("owner and non-owner responses differ")
+        artifact = self.run_swarm(
+            "artifact-add", "--agent", creator, "--work", claimed["id"],
+            "--path", evidence_path, "--kind", "response-pair",
+        )
+        observation = self.run_swarm(
+            "observe", "--agent", creator, "--work", claimed["id"],
+            "--workstream", "order-authz", "--claim", "Response class differs by owner",
+            "--confidence", .8, "--subjects", '["surface:GET /orders/{id}"]',
+            "--evidence", json.dumps([f"sha256:{artifact['sha256']}"]),
+            "--conditions", '{"role":"user"}',
+        )
+        hypothesis = self.run_swarm(
+            "hypothesize", "--agent", creator, "--work", claimed["id"],
+            "--workstream", "order-authz", "--claim", "Object ownership is enforced inconsistently",
+            "--confidence", .6, "--subjects", '["surface:GET /orders/{id}"]',
+            "--falsifiers", '["responses are a shared error template"]',
+            "--caused-by", observation["seq"],
+        )
+        request = self.run_swarm(
+            "request", "--agent", creator, "--work", claimed["id"],
+            "--workstream", "order-authz", "--claim", "Compare a fresh non-owner session",
+            "--subjects", '["surface:GET /orders/{id}"]', "--caused-by", hypothesis["seq"],
+            "--next-actions", json.dumps([{
+                "key": "order-fresh-replay", "title": "Fresh non-owner replay",
+                "kind": "experiment", "priority": 90, "diversity_key": "fresh-session",
+                "expected_information_gain": .9, "estimated_cost": 1.5,
+            }]),
+        )
+        self.assertEqual(1, len(request["created_work"]))
+        duplicate = self.run_swarm(
+            "request", "--agent", creator, "--work", claimed["id"],
+            "--workstream", "order-authz", "--claim", "A second request deduplicates",
+            "--subjects", '["surface:GET /orders/{id}"]', "--caused-by", hypothesis["seq"],
+            "--next-actions", '[{"key":"order-fresh-replay","title":"Duplicate replay"}]',
+        )
+        self.assertEqual(1, len(duplicate["reused_work"]))
+        response = self.run_swarm(
+            "respond", "--agent", responder,
+            "--claim", "Fresh session reproduced the response difference", "--confidence", .9,
+            "--subjects", '["work:1"]', "--evidence", json.dumps([f"event:{request['seq']}"]),
+            "--caused-by", request["seq"],
+        )
+        challenge = self.run_swarm(
+            "challenge", "--agent", creator, "--work", claimed["id"],
+            "--workstream", "order-authz", "--claim", "Tenant membership may explain the result",
+            "--subjects", '["surface:GET /orders/{id}"]', "--caused-by", hypothesis["seq"],
+            "--falsifiers", '["cross-tenant replay behaves the same"]',
+            "--next-actions", '[{"key":"order-cross-tenant","title":"Cross-tenant replay","diversity_key":"tenant"}]',
+        )
+        decision = self.run_swarm(
+            "decide", "--agent", responder,
+            "--claim", "Keep the ownership hypothesis and test tenant separately", "--confidence", .75,
+            "--subjects", '["surface:GET /orders/{id}"]',
+            "--evidence", json.dumps([f"event:{challenge['seq']}"]),
+            "--caused-by", challenge["seq"], "--supersedes", hypothesis["seq"],
+        )
+        synthesis = self.run_swarm(
+            "synthesize", "--agent", creator, "--work", claimed["id"],
+            "--workstream", "order-authz", "--claim", "Ownership remains the best explanation",
+            "--confidence", .82, "--subjects", '["surface:GET /orders/{id}"]',
+            "--evidence", json.dumps([f"event:{observation['seq']}", f"event:{decision['seq']}"]),
+            "--caused-by", decision["seq"],
+        )
+        self.assertEqual(observation["trace_id"], hypothesis["trace_id"])
+        self.assertEqual(request["trace_id"], response["trace_id"])
+        self.assertEqual(request["correlation_id"], response["correlation_id"])
+        self.assertEqual(challenge["correlation_id"], decision["correlation_id"])
+        self.assertTrue(synthesis["trace_id"])
+        self.assertEqual("done", self.run_swarm(
+            "done", "--agent", creator, "--work", claimed["id"],
+            "--summary", "causal state updated",
+        )["state"])
+
+        invalid = self.run_swarm(
+            "observe", "--agent", responder, "--workstream", "order-authz",
+            "--claim", "invalid confidence", "--confidence", 2,
+            "--subjects", '["surface:GET /orders/{id}"]',
+            "--evidence", json.dumps([f"event:{observation['seq']}"]), check=False,
+        )
+        self.assertIn("confidence", invalid.stderr)
+        missing_evidence = self.run_swarm(
+            "observe", "--agent", responder, "--workstream", "order-authz",
+            "--claim", "unknown evidence", "--subjects", '["surface:GET /orders/{id}"]',
+            "--evidence", json.dumps(["sha256:" + "0" * 64]), check=False,
+        )
+        self.assertIn("unknown evidence ref", missing_evidence.stderr)
+        rolled_back = self.run_swarm(
+            "request", "--agent", responder, "--workstream", "order-authz",
+            "--claim", "malformed transition", "--subjects", '["surface:GET /orders/{id}"]',
+            "--next-actions", '[{"key":"must-not-exist"}]', check=False,
+        )
+        self.assertIn("requires string key and title", rolled_back.stderr)
+        conn = sqlite3.connect(self.db())
+        self.assertEqual(0, conn.execute(
+            "SELECT COUNT(*) FROM work WHERE work_key='must-not-exist'"
+        ).fetchone()[0])
+        conn.close()
+        communication = self.run_swarm("communication-metrics")
+        self.assertEqual(8, communication["typed_events"])
+        self.assertEqual(2, communication["causal_unlock_count"])
+        self.assertGreaterEqual(communication["cross_agent_causal_edges"], 2)
+        self.assertGreater(communication["evidence_linked_ratio"], 0)
+        self.assertGreater(communication["task_linked_ratio"], 0)
+        self.assertGreater(communication["actionable_event_ratio"], 0)
+        self.assertGreater(communication["duplicate_spawn_rate"], 0)
+        self.assertIsNotNone(communication["challenge_resolution_latency_seconds_median"])
+        self.assertFalse(any(word in json.dumps(communication).lower()
+                             for word in ("winner", "points", "rank")))
+        conn = sqlite3.connect(self.db())
+        with self.assertRaises(sqlite3.IntegrityError):
+            conn.execute("UPDATE events SET body_json='{}' WHERE seq=?", (observation["seq"],))
+        conn.close()
+
+    def test_task_local_brief_excludes_unrelated_workstreams(self):
+        creator = self.join("brief-creator")
+        worker_a = self.join("brief-worker-a")
+        worker_b = self.join("brief-worker-b")
+        request_a = self.run_swarm(
+            "request", "--agent", creator, "--workstream", "stream-a",
+            "--claim", "A-only objective", "--subjects", '["surface:GET /a"]',
+            "--next-actions", '[{"key":"stream-a-work","title":"A experiment","priority":100}]',
+        )
+        self.run_swarm(
+            "request", "--agent", creator, "--workstream", "stream-b",
+            "--claim", "B-secret-unrelated", "--subjects", '["surface:GET /b"]',
+            "--next-actions", '[{"key":"stream-b-work","title":"B experiment","priority":90}]',
+        )
+        claimed_a = self.run_swarm(
+            "next", "--agent", worker_a, "--wait", 0, "--quiet", 999,
+        )
+        self.assertEqual("stream-a-work", claimed_a["key"])
+        evidence_path = self.home / "scratch" / "brief-a.txt"
+        evidence_path.write_text("A evidence")
+        artifact = self.run_swarm(
+            "artifact-add", "--agent", worker_a, "--work", claimed_a["id"],
+            "--path", evidence_path,
+        )
+        self.run_swarm("surface-add", "--agent", worker_a, "--path", "/a")
+        self.run_swarm(
+            "attempt-add", "--agent", worker_a, "--work", claimed_a["id"],
+            "--surface", "GET /a", "--check", "access-control", "--result", "blocked",
+            "--notes", "requires another account",
+        )
+        self.run_swarm(
+            "observe", "--agent", worker_a, "--work", claimed_a["id"],
+            "--claim", "A-only fact", "--subjects", '["surface:GET /a"]',
+            "--evidence", json.dumps([f"sha256:{artifact['sha256']}"]),
+        )
+        brief = self.run_swarm(
+            "brief", "--agent", worker_a, "--work", claimed_a["id"],
+            "--max-tokens", 1200,
+        )
+        encoded = json.dumps(brief, ensure_ascii=False)
+        self.assertEqual("stream-a", brief["current_work"]["workstream"])
+        self.assertIn("A-only objective", encoded)
+        self.assertIn("A-only fact", encoded)
+        self.assertIn("requires another account", encoded)
+        self.assertIn(artifact["sha256"], encoded)
+        self.assertNotIn("B-secret-unrelated", encoded)
+        stream_inbox = self.run_swarm(
+            "inbox", "--agent", worker_a, "--after", 0,
+            "--collaboration-only", "--workstream", "stream-a",
+        )
+        self.assertTrue(all(item["workstream"] == "stream-a" for item in stream_inbox))
+        self.assertNotIn("B-secret-unrelated", json.dumps(stream_inbox, ensure_ascii=False))
+        denied = self.run_swarm(
+            "brief", "--agent", worker_b, "--work", claimed_a["id"], check=False,
+        )
+        self.assertIn("leased by this agent", denied.stderr)
+        self.run_swarm(
+            "done", "--agent", worker_a, "--work", claimed_a["id"],
+            "--summary", "A state updated",
+        )
+        claimed_b = self.run_swarm(
+            "next", "--agent", worker_b, "--wait", 0, "--quiet", 999,
+            "--brief", "--brief-tokens", 1200,
+        )
+        self.assertEqual("stream-b-work", claimed_b["key"])
+        self.assertIn("B-secret-unrelated", json.dumps(claimed_b["brief"], ensure_ascii=False))
+        self.assertNotIn("A-only fact", json.dumps(claimed_b["brief"], ensure_ascii=False))
+        reused = self.run_swarm(
+            "artifact-add", "--agent", worker_b, "--work", claimed_b["id"],
+            "--path", evidence_path,
+        )
+        self.assertEqual(artifact["id"], reused["id"])
+        conn = sqlite3.connect(self.db())
+        self.assertEqual(2, conn.execute(
+            "SELECT COUNT(*) FROM work_artifacts WHERE artifact_id=?", (artifact["id"],)
+        ).fetchone()[0])
+        conn.close()
+        refreshed_b = self.run_swarm(
+            "brief", "--agent", worker_b, "--work", claimed_b["id"],
+        )
+        self.assertIn(artifact["sha256"], json.dumps(refreshed_b))
+        self.assertEqual(f"event:{request_a['seq']}", brief["current_work"]["caused_by"])
+
+    def test_replay_export_is_deterministic_and_strictly_validated(self):
+        agent = self.join("replay-agent")
+        self.run_swarm(
+            "request", "--agent", agent, "--workstream", "replay-stream",
+            "--claim", "Generate deterministic work", "--subjects", '["surface:GET /replay"]',
+            "--next-actions", '[{"key":"replay-work","title":"Replay work"}]',
+        )
+        first_path = self.home / "board" / "replay-one.json"
+        second_path = self.home / "board" / "replay-two.json"
+        first = self.run_swarm("replay-export", "--output", first_path, "--strict")
+        second = self.run_swarm("replay-export", "--output", second_path, "--strict")
+        self.assertEqual(first["sha256"], second["sha256"])
+        self.assertEqual(first_path.read_bytes(), second_path.read_bytes())
+        stable_bytes = first_path.read_bytes()
+        conn = sqlite3.connect(self.db())
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("UPDATE work SET caused_by_event=999999 WHERE work_key='replay-work'")
+        conn.commit()
+        conn.close()
+        strict_failure = self.run_swarm(
+            "replay-export", "--output", first_path, "--strict", check=False,
+        )
+        self.assertIn("unknown caused_by_event", strict_failure.stderr)
+        self.assertEqual(stable_bytes, first_path.read_bytes())
+        replayed = subprocess.run(
+            ["python3", str(ROOT / "pentest" / "replay.py"), "--events", str(first_path),
+             "--policy", "fifo", "--strict"],
+            text=True, capture_output=True,
+        )
+        self.assertEqual(0, replayed.returncode, replayed.stderr)
+        self.assertEqual([], json.loads(replayed.stdout)["validation_errors"])
+        corrupted = json.loads(first_path.read_text())
+        typed = next(item for item in corrupted["events"] if item["kind"].startswith("causal."))
+        typed["causation_id"] = typed["seq"]
+        corrupt_path = self.home / "board" / "corrupt.json"
+        corrupt_path.write_text(json.dumps(corrupted))
+        rejected = subprocess.run(
+            ["python3", str(ROOT / "pentest" / "replay.py"), "--events", str(corrupt_path),
+             "--strict"], text=True, capture_output=True,
+        )
+        self.assertNotEqual(0, rejected.returncode)
+        self.assertIn("invalid causation_id", rejected.stderr)
+
     def test_one_shot_agent_cannot_claim_a_second_lease(self):
         creator = self.join("creator")
         # Safe default: omitting an execution mode is still one-shot.
@@ -406,7 +663,11 @@ class CliTest(unittest.TestCase):
         self.assertIn("workflows/cohort.js", skill)
         self.assertIn("PROXY.md", skill)
         self.assertIn("WORKSPACES.md", skill)
+        self.assertIn("CAUSAL-PROTOCOL.md", skill)
         self.assertIn("workspace.py ensure", skill)
+        causal_doc = (ROOT / "CAUSAL-PROTOCOL.md").read_text()
+        self.assertIn("Task-local brief", causal_doc)
+        self.assertIn("replay-export", causal_doc)
         self.assertIn("사용자는 `create/use`를 직접 다루지 않는다", (ROOT / "README.md").read_text())
         workspace_doc = (ROOT / "WORKSPACES.md").read_text()
         self.assertIn("PENTEST_ENGAGEMENT", workspace_doc)
@@ -717,6 +978,12 @@ class CliTest(unittest.TestCase):
             "next", "--agent", verifier, "--wait", 0, "--quiet", 999,
         )
         self.assertEqual("verify", verify_work["kind"])
+        verify_brief = self.run_swarm(
+            "brief", "--agent", verifier, "--work", verify_work["id"],
+        )
+        self.assertEqual("FIND-0001", verify_brief["relevant_findings"][0]["ref"])
+        self.assertEqual(finding["evidence"]["sha256"],
+                         verify_brief["relevant_findings"][0]["evidence_sha"])
         bypass = self.run_swarm(
             "done", "--agent", verifier, "--work", verify_work["id"], check=False,
         )
@@ -920,14 +1187,34 @@ class CliTest(unittest.TestCase):
         conn.execute("PRAGMA foreign_keys=OFF")
         conn.execute("DROP TABLE cohort_agents")
         conn.execute("DROP TABLE cohorts")
+        conn.execute("DROP TRIGGER events_immutable_update")
+        conn.execute("DROP TRIGGER events_immutable_delete")
+        conn.execute("DROP INDEX events_trace")
+        conn.execute("DROP INDEX events_workstream")
+        conn.execute("DROP INDEX work_workstream")
         conn.execute("ALTER TABLE agents DROP COLUMN proxy_fail_open")
+        conn.execute("ALTER TABLE events DROP COLUMN trace_id")
+        conn.execute("ALTER TABLE work DROP COLUMN diversity_key")
+        conn.execute("ALTER TABLE attempts DROP COLUMN work_id")
+        conn.execute("ALTER TABLE findings DROP COLUMN work_id")
+        conn.execute("ALTER TABLE attestations DROP COLUMN work_id")
         conn.commit()
         conn.close()
         dossier = self.run_swarm("dossier")
         migrated = sqlite3.connect(self.db())
-        columns = {row[1] for row in migrated.execute("PRAGMA table_info(agents)")}
+        agent_columns = {row[1] for row in migrated.execute("PRAGMA table_info(agents)")}
+        event_columns = {row[1] for row in migrated.execute("PRAGMA table_info(events)")}
+        work_columns = {row[1] for row in migrated.execute("PRAGMA table_info(work)")}
+        attempt_columns = {row[1] for row in migrated.execute("PRAGMA table_info(attempts)")}
+        finding_columns = {row[1] for row in migrated.execute("PRAGMA table_info(findings)")}
+        attestation_columns = {row[1] for row in migrated.execute("PRAGMA table_info(attestations)")}
         migrated.close()
-        self.assertIn("proxy_fail_open", columns)
+        self.assertIn("proxy_fail_open", agent_columns)
+        self.assertIn("trace_id", event_columns)
+        self.assertIn("diversity_key", work_columns)
+        self.assertIn("work_id", attempt_columns)
+        self.assertIn("work_id", finding_columns)
+        self.assertIn("work_id", attestation_columns)
         self.assertEqual(1, dossier["active_cohort"]["number"])
         self.assertEqual(1, dossier["active_cohort"]["joined_peers"])
         self.assertEqual("wait", self.run_swarm(

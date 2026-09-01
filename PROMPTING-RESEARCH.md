@@ -215,13 +215,17 @@ Python, Playwright/Selenium/CDP 모두 explicit proxy를 사용한다. Connectio
 `proxy.unavailable`을 기록하고 direct/offline mode로 진행해 reversing을 막지 않는다. Reachable
 proxy의 CONNECT 거부는 우회하지 않는다. Strict mode와 전체 조건표는 `PROXY.md`.
 
-### 4.4 Dossier startup 최소화
+### 4.4 Claim-first personalized brief
 
 ```bash
-# 모든 모델 공통
-python3 "$S" dossier --recent 8 --gap-limit 5 --compact
-python3 "$S" inbox --agent "$AGENT" --after "$CURSOR" --collaboration-only --limit 25
+# 모든 모델 공통: global recent history를 먼저 로드하지 않는다.
+python3 "$S" status
+python3 "$S" next --agent "$AGENT" --brief --brief-tokens 2200 --after "$CURSOR"
+# wait/recovery일 때만 dossier --recent 8 --gap-limit 5 --compact
 ```
+
+Fresh peer startup은 `global dossier → next`가 아니라 `minimal status → next → task-local brief`다.
+Brief는 causal ancestor/evidence ref와 동일 workstream만 포함한다.
 
 ### 4.5 결과는 파일로
 
@@ -243,10 +247,14 @@ python3 "$S" artifact-add --agent "$AGENT" --path "$OUT" --work "$WORK"
 
 ```bash
 # 각 네트워크 요청 후 즉시
-python3 "$S" attempt-add --agent "$AGENT" --surface "$SURF" --check "$CHK" --result partial
+python3 "$S" attempt-add --agent "$AGENT" --work "$WORK" \
+  --surface "$SURF" --check "$CHK" --result partial
+python3 "$S" observe --agent "$AGENT" --work "$WORK" --workstream "$STREAM" \
+  --claim "$CLAIM" --subjects "$SUBJECT_REFS" --evidence "[\"sha256:$SHA\"]"
 ```
 
-Checkpoint가 refusal/timeout으로 인한 데이터 손실을 최소화한다.
+Checkpoint가 refusal/timeout으로 인한 데이터 손실을 최소화한다. Causally sourced work는
+artifact, linked attempt, typed assertion 중 하나 없이는 `done`되지 않는다.
 
 ### 4.7 Rolling recovery + final postflight
 

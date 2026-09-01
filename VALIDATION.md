@@ -179,3 +179,28 @@ With an unused localhost port, an auto-policy peer recorded `proxy.unavailable`,
 offline reversing lease. The same unavailable endpoint left a `--proxy-required` peer blocked. The
 existing temporary CONNECT test still records `proxy.checked`, site/agent headers, and proxy mode
 when a listener is reachable. A reachable listener that returns non-200 remains fail-closed.
+
+## Causal protocol and personalized-brief validation — 2026-09-01
+
+The suite now contains 34 passing tests. New deterministic tests cover:
+
+- observation → hypothesis → request/response → challenge/decision → synthesis trace inheritance;
+- schema validation for confidence, falsifiers, evidence refs, and typed ancestry;
+- atomic event-to-work creation, canonical-key reuse, diversity/information/cost metadata;
+- SQLite rejection of event update/delete;
+- work-linked artifact/attempt progress and causal completion guards;
+- two unrelated workstreams where each claimed brief excludes the other's recent events/artifacts;
+- non-owner brief rejection and `next --brief` claim-first startup;
+- aggregate actionability, consumption, unlock, duplicate, herding, and challenge metrics without
+  peer points/ranks;
+- byte-identical replay exports, strict causal/evidence validation, and corrupted-replay rejection;
+- additive migration of pre-protocol event/work/attempt/finding/attestation columns.
+
+The existing legacy GJ02 ledger was migrated in place and strict-exported without target traffic:
+553 events and 57 work items produced zero replay validation errors. Its communication projection
+correctly reports 104 legacy collaboration events and zero typed events rather than inventing causal
+provenance retroactively.
+
+This is deliberately the replayable v3.5 substrate, not a claim that graph-frontier scheduling is
+already validated. Capability/entity projection and adaptive scheduling remain subsequent changes to
+be evaluated against these exports.

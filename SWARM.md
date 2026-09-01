@@ -12,16 +12,16 @@ fresh context마다 lease 하나. Cohort는 phase가 아니라 동일 backlog를
 | 공유 cache message board | ordered SQLite `events` journal |
 | agent handle + directed mailbox | join attempt UUID + `inbox --after` cursor |
 | exact-task teams | canonical work key dedup + distinct variant tasks |
-| PHASEONE10841 → PHASEONE[big] compressed dossier | DB-derived `dossier`; leave summary |
+| PHASEONE10841 → PHASEONE[big] compressed dossier | claim-scoped `brief`; global dossier is wait/recovery fallback |
 | assignments and subdelegation | any peer can `task-add`; any peer can atomically `next` |
 | HOLD / owner / VETO / STOP | enforced lease / owner; challenge event; operator-only close |
 | Base64 scripts/gadgets/kits | local artifact registry with SHA-256 |
 | independent reproduction triggered mass pivot | finder-excluded attestation activates planned follow-up leases |
 | ended agents handed off work | rolling slot replacement + cohort summary + fresh-context takeover |
-| shared traffic visibility | mandatory local proxy preflight + explicit tool proxy configuration |
+| shared traffic visibility | proxy auto decision + explicit tool mode configuration |
 | trip-wire after origin agent exited | durable local event/artifact state |
 | thousands of failed paths, later revisited | append-only attempt history + follow-up work |
-| new agents rapidly joined dominant workstream | eight concurrent slots; fresh replacements read the same dossier/backlog |
+| new agents rapidly joined dominant workstream | fresh replacements read the same causal backlog and task-local brief |
 
 ## 사건에서 가져오지 않은 것
 
@@ -43,23 +43,29 @@ Selection이 없으면 legacy single-site layout을 유지한다. 자세한 규�
 
 선택된 workspace의 `state/<engagement>.sqlite3`만 authoritative. JSONL은 사후 export다.
 
-### Event
+### Typed causal event
 
-Immutable, ordered, cursor-readable:
+DB trigger로 update/delete가 거부되는 ordered, cursor-readable assertion이다:
 
 ```json
 {
   "seq": 42,
-  "actor": "peer-2-a71d...",
-  "kind": "intel",
+  "kind": "causal.observation",
+  "trace_id": "...",
+  "causation_id": 41,
+  "correlation_id": "order-boundary",
   "workstream": "order-boundary",
-  "body": {"surface":"GET /order/details","observation":"..."}
+  "subject_refs": ["surface:GET /order/details", "work:12"],
+  "evidence_refs": ["sha256:..."],
+  "confidence": 0.72,
+  "body": {"claim":"...","falsifiers":[],"next_actions":[]}
 }
 ```
 
-Useful kinds: `intel`, `request`, `response`, `challenge`, `extend`, `failure`,
-`task.blocked`. 스키마가 필요한 상태는 free-form event가 아니라 전용 command를 쓴다.
-`agent.*`, `work.*`, `finding.*` 등 system event prefix는 `emit`으로 위조할 수 없다.
+Collective reasoning은 `observe`, `hypothesize`, `request`, `respond`, `challenge`, `decide`,
+`handoff`, `synthesize`를 사용한다. Request/challenge의 structured next action은 event와 work를
+한 transaction에서 만든다. `emit`은 legacy escape hatch와 `task.blocked`에만 남긴다.
+`causal.*`, `agent.*`, `work.*`, `finding.*` 등 system prefix는 위조할 수 없다.
 
 ### Work
 
@@ -74,6 +80,8 @@ ready ──atomic claim──> leased ──done──> done
 - lease + heartbeat: 죽은 peer의 작업이 영구 lock되지 않음
 - `forbidden_actor`: finder가 자기 verification work를 claim하지 못함
 - optional parent: prerequisite work가 done일 때만 ready
+- workstream/diversity/information-gain/cost/revisit metadata는 replay에서 다음 scheduler를 평가
+- `caused_by_event`: event→work→claim→assertion의 provenance를 보존
 
 ### Finding
 
@@ -104,13 +112,14 @@ check synonym은 canonical name으로 정규화된다. Ready work가 없으면 `
 ## Atomic peer unit
 
 ```
-join → bounded dossier/inbox → atomic next()
+join → minimal status/proxy decision → atomic next(--brief)
   if claimed:
+    read only task-local provenance
     execute within scope
-    immediately checkpoint artifact/hash + attempt/finding/message
+    immediately checkpoint artifact/hash + attempt/finding/typed assertion
     done, fail, or attest; never silently abandon
   if wait:
-    optionally propose one unexplored hypothesis with canonical key
+    inspect compact global dossier, then optionally propose one typed hypothesis/request
 leave(summary)
 ```
 
@@ -126,6 +135,19 @@ quiescence/timebox까지 반복한다. Luna profile은 `--one-shot`으로 등록
 lease와 artifact 없는 `done`을 거부하고 unit 하나 뒤 종료한다. Rolling supervisor가 같은
 logical slot의 다음 generation을 새 `context: "fresh"` child로 시작한다. 두 방식 모두 동일
 backlog에서 어떤 work든 claim하며 work 유형에 따른 모델 라우팅이나 역할 제약은 없다.
+
+## Personalized brief and replay
+
+`brief --agent --work`는 active lease owner에게만 current workstream의 causal assertions,
+negative attempts, artifact associations, finding/attestation, referenced credential, snapshot을 준다.
+단순 recent window로 unrelated stream을 섞지 않으며 큰 core value는 hash-addressed ref로 대체한다.
+Causal source에서 생성된 work는 artifact, linked attempt, 또는 typed assertion 없이 `done`할 수 없다.
+
+`replay-export --strict`는 events/work/workstreams/evidence projection을 canonical JSON으로 export한다.
+같은 snapshot은 byte-identical하고 `replay.py`가 causal ordering, typed ancestry, evidence/work refs를
+검증한다. Relational tables가 계속 authoritative이며 replay는 secret/target state 복원을 주장하지 않는다.
+`communication-metrics`는 aggregate actionability, consumption latency, unlock, duplicate, herding,
+challenge resolution만 operator에게 제공하며 peer leaderboard를 만들지 않는다.
 
 ## Emergent coordinator
 
@@ -175,7 +197,8 @@ METR 보고서에서 PHASEONE[big]도 전체 assignment 중 약 10%만 보냈다
 ## Artifact rules
 
 - `engagement_env.sh`가 지정한 `$PENTEST_SCRATCH` 안에만 durable PoC/capture/tool 저장
-- `artifact-add` 후 SHA-256을 message/work/finding에서 참조
+- `artifact-add` 후 SHA-256을 typed evidence/work/finding에서 참조
+- `work_artifacts`가 동일 content-addressed artifact의 여러 work association을 보존
 - 동일 artifact를 수정하면 새 hash로 새 revision 등록
 - 외부 pastebin/dataset/dead drop은 금지
 - shared mutable file을 lock 없이 여러 peer가 수정하지 않음
@@ -205,6 +228,7 @@ saturation과 무관하게 허용된다. Report/export는 어느 시점에도 �
 - append-only attempt 수
 - registered surface×check coverage ratio
 - completed/refusal/budget/timeout/interrupted/provider-error run-result 수
+- typed/actionable event ratio, consumption/challenge latency, unlock/duplicate/herding aggregate
 
 Peer에게 점수·순위·multiplier를 보여주지 않는다. Event spam, severity self-claim,
 `serendipity` 반복으로 accepted finding 수가 바뀌지 않는다.

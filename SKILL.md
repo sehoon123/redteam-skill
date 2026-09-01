@@ -21,11 +21,13 @@ OpenAI–Hugging Face 사건에서 실제 성과를 만든 패턴만 안전하�
 - 죽은 agent의 작업 인계 → lease expiry + 다음 fresh-context cohort takeover
 - 수천 개 실패 경로와 재방문 → append-only attempt history
 - unexplored work 분배 → `next`가 coverage gap을 canonical task로 자동 materialize
+- collective cognition → typed causal event, task-local brief, deterministic replay projection
 
 사건의 위험한 패턴은 가져오지 않는다: agent-visible reward, scope drift,
 외부 dead drop/C2, persistence, transcript spoofing, safeguard 우회.
 근거와 정확한 출처는 `RESEARCH.md`, 협업 규약은 `SWARM.md`, 프롬프팅 연구는
-`PROMPTING-RESEARCH.md`를 읽어라.
+`PROMPTING-RESEARCH.md`를 읽어라. Causal protocol과 personalized brief 계약은
+`CAUSAL-PROTOCOL.md`.
 
 ## Operator contract
 
@@ -42,7 +44,7 @@ fail closed. 실제 네트워크 차단은 반드시 infrastructure layer에서 
 
 ```bash
 mkdir -p .pi/skills/redteam/workflows .pi/agents .pi/pentest
-cp SKILL.md SWARM.md RESEARCH.md PROMPTING-RESEARCH.md PROXY.md WORKSPACES.md VALIDATION.md .pi/skills/redteam/
+cp SKILL.md SWARM.md RESEARCH.md PROMPTING-RESEARCH.md PROXY.md WORKSPACES.md CAUSAL-PROTOCOL.md VALIDATION.md .pi/skills/redteam/
 cp workflows/cohort.js .pi/skills/redteam/workflows/
 cp agents/pentest-peer.md agents/pentest-peer-sonnet.md agents/pentest-peer-luna.md \
   agents/pentest-cohort-selector.md agents/pentest-run-recorder.md agents/luna-probe.md .pi/agents/
@@ -63,7 +65,7 @@ Runtime code와 site data는 분리된다:
 │   ├── board/               # site-local export
 │   ├── memory/              # site-local curated knowledge
 │   └── cache/
-├── swarm.py / postflight.py / kb.py / workspace.py
+├── swarm.py / protocol.py / replay.py / postflight.py / kb.py / workspace.py
 └── research/board/          # shared read-only operational research
 ```
 
@@ -100,7 +102,9 @@ pointer를 바꾸지 않고 fail closed하므로, 그때만 별도 Pi process를
 site-local scratch/report 경로를 사용한다. Selection이 없으면 기존 single-site layout을 그대로 쓴다.
 
 `init` is idempotent for the same scope hash and starts `cohort-1` with a target of eight
-concurrent equal-authority slots. Luna fresh replacements may create more than eight joined actor
+concurrent equal-authority slots. Normal peers load `status`, claim via `next --brief`, then use
+`observe/hypothesize/request/respond/challenge/decide/handoff/synthesize`; global dossier is only a
+wait/recovery fallback. Typed request/challenge can create causally sourced work atomically. Luna fresh replacements may create more than eight joined actor
 records. A changed scope requires a new `engagement_id`; old work cannot silently cross engagements.
 
 ## Proxy auto contract
@@ -222,12 +226,12 @@ Sonnet/Opus peer는 다음 autonomous loop를 지킨다. Luna에는 이 loop를 
 Luna는 `agents/pentest-peer-luna.md`의 one-shot lifecycle을 사용한다.
 
 ```
-join(cursor) → bounded dossier/collaboration inbox/credentials → next(atomic lease)
-  ├─ untested gap: auto-created coverage work → attempt → done
-  ├─ work 있음: execute → 즉시 message/artifact/credential/finding 공유
+join(cursor) → minimal status/proxy decision → next(atomic lease + task-local brief)
+  ├─ untested gap: auto-created coverage work → linked attempt → done
+  ├─ work 있음: execute → 즉시 typed assertion/artifact/credential/finding 공유
   ├─ verification: finder와 다른 peer가 fresh evidence로 attest
   ├─ reproduced: planned follow-up tasks가 ready로 전환 → collective pivot
-  ├─ work 없음: unexplored hypothesis 제안 → next
+  ├─ work 없음: compact dossier 확인 → typed hypothesis/request → next
   └─ cohort timebox/quiescence: leave(summary)
 ```
 
@@ -235,26 +239,31 @@ join(cursor) → bounded dossier/collaboration inbox/credentials → next(atomic
 
 ```bash
 S=.pi/pentest/swarm.py
-python3 "$S" dossier --recent 8 --gap-limit 5 --compact
-python3 "$S" inbox --agent "$AGENT" --after "$CURSOR" --limit 25 --collaboration-only
-python3 "$S" task-add --agent "$AGENT" --key 'GET:/catalog:server-input:boolean' \
-  --kind hypothesis --title 'Analyze category input behavior'
-python3 "$S" next --agent "$AGENT" --wait 10 --lease 180 --quiet 90
+python3 "$S" status
+python3 "$S" next --agent "$AGENT" --wait 10 --lease 180 --quiet 90 \
+  --brief --brief-tokens 2200 --after "$CURSOR"
+python3 "$S" brief --agent "$AGENT" --work "$WORK" --after "$CURSOR"
 python3 "$S" heartbeat --agent "$AGENT" --work "$WORK" --lease 180
 python3 "$S" done --agent "$AGENT" --work "$WORK" --summary 'result and follow-ups'
-python3 "$S" credentials --show-values
+# wait/recovery only: dossier --recent 8 --gap-limit 5 --compact
 ```
 
-### Immediate sharing
+### Immediate typed sharing
 
 ```bash
-python3 "$S" emit --agent "$AGENT" --kind intel \
-  --json '{"surface":"GET /order/details","observation":"orderId changes response class"}'
-python3 "$S" surface-add --agent "$AGENT" --method GET --path '/order/details' \
-  --params '["orderId"]'
-python3 "$S" attempt-add --agent "$AGENT" --surface 'GET /order/details' \
-  --check access-control --result partial --notes 'needs second account'
+OBS=$(python3 "$S" observe --agent "$AGENT" --work "$WORK" --workstream order-authz \
+  --claim 'orderId changes response class' --confidence 0.7 \
+  --subjects '["surface:GET /order/details"]' --evidence "[\"sha256:$SHA\"]")
+OBS_SEQ=$(python3 -c 'import json,sys;print(json.load(sys.stdin)["seq"])' <<<"$OBS")
+python3 "$S" request --agent "$AGENT" --work "$WORK" --workstream order-authz \
+  --claim 'fresh account must discriminate ownership from tenant behavior' \
+  --subjects '["surface:GET /order/details"]' --caused-by "$OBS_SEQ" \
+  --next-actions '[{"key":"orders:fresh-account","title":"Fresh-account replay","diversity_key":"identity"}]'
+python3 "$S" attempt-add --agent "$AGENT" --work "$WORK" \
+  --surface 'GET /order/details' --check access-control --result partial
 ```
+
+`emit`은 `task.blocked`와 legacy escape hatch에만 사용한다. 전체 schema는 `CAUSAL-PROTOCOL.md`.
 
 ### Evidence and independent reproduction
 
@@ -283,10 +292,12 @@ diversity multiplier를 보여주면 finding spam과 score manipulation이 목�
 
 ```bash
 python3 .pi/pentest/swarm.py metrics
+python3 .pi/pentest/swarm.py communication-metrics
 ```
 
-지표: reproduced/rejected/contested findings, validation latency, attempts,
-registered surface×check coverage. 임의 board 메시지는 지표를 바꾸지 못한다.
+지표: finding/validation/coverage와 aggregate typed adoption, actionable-event ratio,
+consumption latency, causal unlock, duplicate spawn, herding, challenge resolution. Agent별
+points/rank/winner는 만들지 않는다.
 
 ## Cohort handoff and saturation
 
@@ -298,6 +309,7 @@ run-result, 미완료 work, surface/finding/attempt delta가 고정된다. 다�
 ```bash
 python3 .pi/pentest/swarm.py cohort-end --reason 'timebox complete'
 python3 .pi/pentest/swarm.py cohort-start --label next-fresh-context --peers 8
+# next가 wait/recovery를 반환한 경우에만 global fallback
 python3 .pi/pentest/swarm.py dossier --recent 8 --gap-limit 5 --compact
 ```
 
@@ -323,10 +335,13 @@ attestation을 기록하고, operator는 원하는 시점에 동일 ledger snaps
 ```bash
 python3 .pi/pentest/swarm.py report
 python3 .pi/pentest/swarm.py export
+python3 .pi/pentest/swarm.py replay-export --strict
+python3 .pi/pentest/replay.py --events "$PENTEST_BOARD/replay.json" --policy fifo --strict
 ```
 
-`report`와 `export`는 선택된 workspace의 `$PENTEST_FINDINGS/report.md`,
-`$PENTEST_BOARD/events.jsonl`을 atomic replace로 생성한다.
+`report`, legacy-compatible JSONL `export`, canonical replay projection은 선택된 workspace에
+atomic replace로 생성된다. 같은 snapshot의 replay export는 byte-identical하며 causal/evidence
+reference를 strict validation한다.
 
 ## Prompting discipline
 
