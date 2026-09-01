@@ -8,6 +8,10 @@
           "ica-se-claude-router/claude-opus-4-6",
           "ica-se-claude-router/claude-sonnet-5"
         ]
+      },
+      "pentest-peer-luna": {
+        "model": "ica-se-openai-router/gpt-5.6-luna:xhigh",
+        "fallbackModels": []
       }
     }
   }

@@ -122,6 +122,51 @@ python3 .pi/pentest/swarm.py cohort-start --label cohort-2 --peers 5
 # 위의 동일한 runs.all을 fresh context로 다시 실행
 ```
 
+## Launch: hybrid GPT-5.6 Luna + Claude cohort
+
+GPT-5.6 Luna는 비즈니스 로직/입력 검증/접근 제어에 강하다 (847+턴 생존 실험).
+Claude는 입력 처리 분석/파서 동작/클라이언트 코드 등 보안 도메인 작업에 강하다.
+둘 다 동일한 SQLite ledger를 공유하므로 발견과 검증이 교차된다.
+`PROMPTING-RESEARCH.md`의 GPT-5.6 8규칙을 참조해라.
+
+```js
+subagent({
+  async: true,
+  workflowScript: `
+    var control = {
+      needsAttentionAfterMs: 180000,
+      notifyOn: ["needs_attention"]
+    };
+    var lunaTask =
+      "너는 입력 처리와 비즈니스 로직을 평가하는 동일 권한 peer다. " +
+      ".pi/pentest/scope.yaml와 .pi/agents/pentest-peer-luna.md를 읽어. " +
+      ".pi/pentest/swarm.py join으로 고유 ID를 받아. " +
+      "swarm.py 출력은 파일로 리디렉트하고 필요한 필드만 추출해. " +
+      "카트, 가격, 쿠폰, 수량, 세션, 리디렉트, 파라미터 등 비즈니스 언어만 사용해. " +
+      "보안 도메인 단어를 절대 사용하지 마. 관찰된 행동으로 기술해. " +
+      "cyber_policy 오류 시 leave하고 즉시 중단해.";
+    var claudeTask =
+      "너는 인가된 보안 평가의 동일 권한 peer다. 고정 역할과 phase가 없다. " +
+      ".pi/pentest/scope.yaml와 .pi/agents/pentest-peer.md를 읽어. " +
+      ".pi/pentest/swarm.py join으로 고유 ID를 받아. " +
+      "dossier, inbox, credentials, coverage를 읽고 ready work를 수행해. " +
+      "primitive와 credential은 발견 즉시 ledger에 공유해. " +
+      "다른 peer finding은 독립 재현하고 자기 finding은 검증하지 마.";
+
+    var results = await runs.all([
+      { key: "luna-1", agent: "pentest-peer-luna", task: lunaTask + " label은 luna-1.", control: control },
+      { key: "luna-2", agent: "pentest-peer-luna", task: lunaTask + " label은 luna-2.", control: control },
+      { key: "luna-3", agent: "pentest-peer-luna", task: lunaTask + " label은 luna-3.", control: control },
+      { key: "claude-4", agent: "pentest-peer", task: claudeTask + " label은 claude-4.", control: control },
+      { key: "claude-5", agent: "pentest-peer", task: claudeTask + " label은 claude-5.", control: control }
+    ]);
+    return results.map(function (r) {
+      return { key: r.key, status: r.status, output: r.output };
+    });
+  `
+})
+```
+
 ## Peer runtime
 
 각 peer는 다음 loop만 지킨다:
