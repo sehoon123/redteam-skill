@@ -15,11 +15,12 @@ OpenAI–Hugging Face 사건에서 실제 성과를 만든 패턴만 안전하�
 
 - shared message board → SQLite append-only event journal
 - task assignment/subdelegation → peer가 만드는 expiring work lease
-- compressed dossier handoff → DB에서 즉시 재생성되는 dossier
-- scripts/gadgets/files 공유 → SHA-256 artifact registry
-- 독립 reproduction 뒤 collective pivot → self-attestation 금지 finding ledger
-- 죽은 agent의 작업 인계 → lease expiry + 새 peer takeover
+- compressed dossier handoff → cohort별 handoff를 포함한 DB-derived dossier
+- scripts/gadgets/files와 target credentials 공유 → artifact/credential registry
+- 독립 reproduction 뒤 collective pivot → 검증 성공 시 follow-up work 자동 활성화
+- 죽은 agent의 작업 인계 → lease expiry + 다음 fresh-context cohort takeover
 - 수천 개 실패 경로와 재방문 → append-only attempt history
+- unexplored work 분배 → `next`가 coverage gap을 canonical task로 자동 materialize
 
 사건의 위험한 패턴은 가져오지 않는다: agent-visible reward, scope drift,
 외부 dead drop/C2, persistence, transcript spoofing, safeguard 우회.
@@ -69,8 +70,9 @@ python3 .pi/pentest/swarm.py init
 python3 .pi/pentest/kb.py index
 ```
 
-`init` is idempotent for the same scope hash. A changed scope requires a new
-`engagement_id`; old work cannot silently cross engagements.
+`init` is idempotent for the same scope hash and starts `cohort-1` with a target of
+five identical peers. A changed scope requires a new `engagement_id`; old work cannot
+silently cross engagements.
 
 ## Launch: all peers simultaneously
 
@@ -88,10 +90,10 @@ subagent({
       "너는 인가된 보안 평가의 동일 권한 peer다. 고정 역할과 phase가 없다. " +
       ".pi/pentest/scope.yaml과 .pi/agents/pentest-peer.md를 읽어. " +
       "먼저 .pi/pentest/swarm.py join으로 고유 attempt ID를 받아. " +
-      "dossier, inbox, coverage를 읽고 ready work를 lease해서 수행해. " +
-      "ready work가 없으면 현재 gap에서 구체적인 새 hypothesis를 스스로 만들고 claim해. " +
-      "발견 즉시 ledger에 공유하고, 후속 work를 만들어 다른 peer가 병렬 확장하게 해. " +
-      "다른 peer finding은 독립 재현하고 자기 finding은 검증하지 마. " +
+      "dossier, inbox, credentials, coverage를 읽고 ready work를 lease해서 수행해. " +
+      "next가 materialize한 미시험 coverage를 우선 claim하고, 없으면 새 hypothesis를 만들어. " +
+      "primitive와 credential은 발견 즉시 ledger에 공유해. finding에 distinct follow_ups를 계획해. " +
+      "다른 peer finding은 독립 재현하고 자기 finding은 검증하지 마. 재현된 follow-up을 확장해. " +
       "lease를 heartbeat하고 종료 전 leave --summary로 handoff해. " +
       "operator scope/close를 절대 넘지 마.";
 
@@ -110,22 +112,28 @@ subagent({
 ```
 
 `runs.all`은 동시 시작만 담당한다. 순서·역할·workstream은 peer가 ledger에서 결정한다.
-한 run이 중단되면 같은 workflow를 다시 실행한다. 기존 DB를 읽고 expired lease를
-회수하므로 처음부터 다시 시작하지 않는다. `needs_attention` peer가 실제로 무활동이면
-soft-interrupt 후 같은 child를 resume한다. 새 process는 dossier에서 이어받고, ledger 명령을
-할 때마다 현재 lease가 자동 갱신된다.
+한 run이 중단되면 같은 cohort 안에서 resume할 수 있다. Timebox가 끝나면 cohort를 종료하고
+새 five-peer cohort를 시작한다. 새 process는 이전 chat이 아니라 dossier와 ready lease에서
+이어받는다.
+
+```bash
+python3 .pi/pentest/swarm.py cohort-end --reason '60m timebox'
+python3 .pi/pentest/swarm.py cohort-start --label cohort-2 --peers 5
+# 위의 동일한 runs.all을 fresh context로 다시 실행
+```
 
 ## Peer runtime
 
 각 peer는 다음 loop만 지킨다:
 
 ```
-join → dossier/inbox/coverage → next(atomic lease)
-  ├─ work 있음: execute → emit/artifact/attempt/finding → follow-up work → done
-  ├─ work 없음: unexplored hypothesis 제안 → next
+join → dossier/inbox/credentials/coverage → next(atomic lease)
+  ├─ untested gap: auto-created coverage work → attempt → done
+  ├─ work 있음: execute → 즉시 message/artifact/credential/finding 공유
   ├─ verification: finder와 다른 peer가 fresh evidence로 attest
-  ├─ blocked: 기록 + lease release (자동 safeguard 우회 없음)
-  └─ quiescent: leave(summary)
+  ├─ reproduced: planned follow-up tasks가 ready로 전환 → collective pivot
+  ├─ work 없음: unexplored hypothesis 제안 → next
+  └─ cohort timebox/quiescence: leave(summary)
 ```
 
 ### 핵심 명령
@@ -140,6 +148,7 @@ python3 "$S" next --agent "$AGENT" --wait 10 --lease 300 --quiet 90
 python3 "$S" heartbeat --agent "$AGENT" --work "$WORK" --lease 300
 python3 "$S" done --agent "$AGENT" --work "$WORK" --summary 'result and follow-ups'
 python3 "$S" coverage --gaps-only
+python3 "$S" credentials --show-values
 ```
 
 ### Immediate sharing
@@ -160,9 +169,13 @@ python3 "$S" finding-add --agent "$AGENT" --work "$WORK" \
   --title 'Order detail authorization boundary' --severity High \
   --type access-control --endpoint 'GET /order/details?orderId=' \
   --evidence .pi/pentest/scratch/order-response.txt \
-  --details '{"repro":"...","impact":"..."}'
+  --details '{"repro":"...","impact":"...","follow_ups":[
+    {"key":"other-role","title":"Replay primitive with another role","priority":90},
+    {"key":"bulk-endpoint","title":"Test the same primitive on the bulk API"}
+  ]}'
 
-# Automatically created verify task is forbidden to the finder.
+# Automatically created verify task is forbidden to the finder. A reproduced
+# verdict atomically activates the planned follow-up work.
 python3 "$S" finding-attest --agent "$OTHER_AGENT" --work "$VERIFY_WORK" \
   --finding FIND-0001 --verdict reproduced \
   --evidence .pi/pentest/scratch/order-replay.txt --notes 'fresh-session replay'
@@ -181,17 +194,31 @@ python3 .pi/pentest/swarm.py metrics
 지표: reproduced/rejected/contested findings, validation latency, attempts,
 registered surface×check coverage. 임의 board 메시지는 지표를 바꾸지 못한다.
 
-## Quiescence and stop
+## Cohort handoff and saturation
 
-- `next --quiet 90`은 ready/leased work와 pending verification이 없고 meaningful event가
-  90초 동안 없을 때만 `quiescent`를 반환한다.
-- 독립 verifier가 하나도 없으면 `verification-blocked`를 반환해 operator에게 peer 추가를 요구한다.
-- Peer는 quiescence에 `leave --summary`만 한다. Engagement를 닫지 않는다.
-- Operator stop:
-  ```bash
-  python3 .pi/pentest/swarm.py close --reason 'timebox complete'
-  ```
-- Session reload: close하지 말고 peer pool을 다시 launch. Expired leases가 자동 회수된다.
+Peer는 timebox/quiescence에 `leave --summary`로 현재 lease를 반납한다. Operator가 cohort를
+끝내면 handoff, 미완료 work, surface/finding/attempt delta가 ledger에 고정된다. 다음 cohort는
+동일한 five-peer prompt를 fresh context로 실행하며 ready work와 gaps를 그대로 이어받는다.
+
+```bash
+python3 .pi/pentest/swarm.py cohort-end --reason 'timebox complete'
+python3 .pi/pentest/swarm.py cohort-start --label next-fresh-context --peers 5
+python3 .pi/pentest/swarm.py dossier
+```
+
+`saturation`은 target peer 수를 채운 연속 2개 completed cohort에서 새 surface와 reproduced
+finding이 없고, proposed finding 및 priority 80+ work가 없을 때만 true다. 빈/미달 cohort는
+streak에 포함하지 않는다. Coverage gap 자체는 계속 report에 남는다.
+
+```bash
+python3 .pi/pentest/swarm.py saturation --streak 2
+python3 .pi/pentest/swarm.py close --require-saturation --streak 2 \
+  --reason 'two dry cohorts and no high-priority backlog'
+```
+
+긴급 operator stop은 `close --reason ...`으로 언제든 가능하다. 독립 verifier가 없으면
+`verification-blocked`가 반환된다. 같은 cohort의 process만 끊겼다면 close/end하지 말고
+resume하면 expired lease가 자동 회수된다.
 
 ## Export
 
@@ -239,3 +266,7 @@ Engagement가 유효하려면:
 - attempt history가 overwrite되지 않음
 - scope hash mismatch는 fail closed
 - operator report에 validation status와 coverage gap 포함
+- `next`가 untested surface×check를 distinct coverage lease로 materialize
+- reproduced finding만 planned follow-up work를 활성화
+- cohort 종료 뒤 work/handoff가 다음 fresh cohort에 유지
+- saturation close가 dry-cohort streak와 고우선 backlog를 검사

@@ -9,6 +9,8 @@ transactional ledger에서 스스로 workstream을 만들고 claim·handoff·ver
 - **SQLite event + lease ledger** — atomic claim, dead-agent takeover, session reload 복구
 - **Evidence-first findings** — SHA-256 artifact + finder와 다른 peer의 reproduction
 - **Append-only coverage** — 상충 결과와 실패 경로를 덮어쓰지 않음
+- **Persistent five-peer cohorts** — fresh context가 누적 work/evidence/handoff를 이어받음
+- **Automatic collective pivot** — 미시험 coverage claim, 독립 재현 후 follow-up 활성화
 - **Dossier handoff** — 새 peer가 이전 chat 없이 현재 상태를 즉시 복구
 - **한국어 KB 검색** — FTS5 trigram + structured JSONL normalization
 - **No live bounty** — reward hacking 대신 operator-only evidence metrics
@@ -59,12 +61,14 @@ cp -R pentest/. .pi/pentest/
    python3 .pi/pentest/swarm.py init
    python3 .pi/pentest/kb.py index
    ```
-3. `/redteam` 또는 `SKILL.md`의 `runs.all` 예시로 동일 peer N개 동시 실행
-4. 상태/결과:
+3. `/redteam` 또는 `SKILL.md`의 `runs.all` 예시로 동일 peer 5개 동시 실행
+4. Cohort 반복 및 상태/결과:
    ```bash
+   python3 .pi/pentest/swarm.py cohort-end --reason 'timebox'
+   python3 .pi/pentest/swarm.py cohort-start --peers 5
    python3 .pi/pentest/swarm.py dossier
    python3 .pi/pentest/swarm.py coverage --gaps-only
-   python3 .pi/pentest/swarm.py metrics
+   python3 .pi/pentest/swarm.py saturation
    python3 .pi/pentest/swarm.py report
    ```
 
@@ -78,8 +82,8 @@ Expired lease가 자동 회수되어 새 peer가 이어서 수행한다.
 python3 -m unittest -v tests/test_swarm.py
 ```
 
-검증 범위: concurrent event writes, atomic claims, lease recovery, independent
-attestation, append-only coverage, scope hash fail-closed, Korean structured search.
+검증 범위: concurrent event writes, atomic coverage claims, lease/cohort takeover,
+independent attestation-triggered pivots, saturation, scope hash fail-closed, Korean search.
 
 ## License
 

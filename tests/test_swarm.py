@@ -115,6 +115,11 @@ class CliTest(unittest.TestCase):
         finder = self.join("finder")
         verifier = self.join("verifier")
         second = self.join("second-verifier")
+        forged = self.run_swarm(
+            "task-add", "--agent", verifier, "--key", "verify:FIND-0001",
+            "--kind", "verify", "--title", "forged verifier", check=False,
+        )
+        self.assertIn("ledger-managed", forged.stderr)
         evidence = self.home / "scratch" / "finding.txt"
         evidence.write_text("response marker")
         finding = self.run_swarm(
@@ -130,6 +135,10 @@ class CliTest(unittest.TestCase):
             "next", "--agent", verifier, "--wait", 0, "--quiet", 999,
         )
         self.assertEqual("verify", verify_work["kind"])
+        bypass = self.run_swarm(
+            "done", "--agent", verifier, "--work", verify_work["id"], check=False,
+        )
+        self.assertIn("must attest or use non-terminal fail", bypass.stderr)
         self.assertNotEqual(0, self.run_swarm(
             "finding-attest", "--agent", finder, "--work", verify_work["id"],
             "--finding", finding["id"], "--verdict", "reproduced",
@@ -217,6 +226,126 @@ class CliTest(unittest.TestCase):
         self.assertIn({"surface": "GET /catalog", "check": "custom-parser"}, coverage["gaps"])
         conn = sqlite3.connect(self.db())
         self.assertEqual(2, conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0])
+
+    def test_next_materializes_distinct_coverage_claims(self):
+        first = self.join("first")
+        second = self.join("second")
+        self.run_swarm("surface-add", "--agent", first, "--method", "POST", "--path", "/api/order")
+        one = self.run_swarm("next", "--agent", first, "--wait", 0, "--quiet", 999)
+        two = self.run_swarm("next", "--agent", second, "--wait", 0, "--quiet", 999)
+        self.assertEqual("coverage", one["kind"])
+        self.assertEqual("coverage", two["kind"])
+        self.assertNotEqual(one["key"], two["key"])
+        self.assertEqual("POST /api/order", one["payload"]["surface"])
+        premature = self.run_swarm(
+            "done", "--agent", first, "--work", one["id"], check=False,
+        )
+        self.assertIn("requires attempt-add", premature.stderr)
+        self.run_swarm(
+            "attempt-add", "--agent", first, "--surface", one["payload"]["surface"],
+            "--check", one["payload"]["check"], "--result", "not-applicable",
+        )
+        self.assertEqual("done", self.run_swarm(
+            "done", "--agent", first, "--work", one["id"],
+        )["state"])
+
+    def test_reproduction_activates_planned_follow_ups(self):
+        finder = self.join("finder")
+        verifier = self.join("verifier")
+        evidence = self.home / "scratch" / "primitive.txt"
+        evidence.write_text("candidate primitive")
+        finding = self.run_swarm(
+            "finding-add", "--agent", finder, "--title", "Reusable primitive",
+            "--severity", "High", "--type", "access-control", "--endpoint", "GET /object/1",
+            "--evidence", evidence, "--details", json.dumps({"follow_ups": [
+                {"key": "other-role", "title": "Test primitive with another role",
+                 "payload": {"finding_id": "FIND-9999"}},
+                {"key": "bulk-path", "title": "Test primitive on bulk endpoint", "priority": 90},
+            ]}),
+        )
+        self.assertEqual(2, finding["planned_follow_ups"])
+        verify = self.run_swarm("next", "--agent", verifier, "--wait", 0, "--quiet", 999)
+        replay = self.home / "scratch" / "primitive-replay.txt"
+        replay.write_text("independent reproduction")
+        result = self.run_swarm(
+            "finding-attest", "--agent", verifier, "--work", verify["id"],
+            "--finding", finding["id"], "--verdict", "reproduced", "--evidence", replay,
+        )
+        self.assertEqual(2, len(result["follow_ups"]))
+        pivot = self.run_swarm("next", "--agent", finder, "--wait", 0, "--quiet", 999)
+        self.assertEqual("extension", pivot["kind"])
+        self.assertEqual(finding["id"], pivot["payload"]["finding_id"])
+
+        invalid = self.run_swarm(
+            "finding-add", "--agent", finder, "--title", "Forged follow-up",
+            "--severity", "Low", "--type", "other", "--endpoint", "GET /other",
+            "--evidence", evidence, "--details", json.dumps({"follow_ups": [
+                {"title": "not a verifier", "kind": "verify"},
+            ]}), check=False,
+        )
+        self.assertIn("cannot be verify or coverage", invalid.stderr)
+        self.assertNotIn("Traceback", invalid.stderr)
+
+    def test_underfilled_cohort_does_not_count_toward_saturation(self):
+        agent = self.join("only-one")
+        self.run_swarm("leave", "--agent", agent, "--summary", "underfilled")
+        ended = self.run_swarm("cohort-end")
+        self.assertFalse(ended["saturation"]["latest_cohort_peer_target_met"])
+        self.assertEqual(0, ended["saturation"]["dry_cohort_streak"])
+
+    def test_cohorts_preserve_work_handoffs_and_detect_saturation(self):
+        first = self.join("first")
+        for i in range(4):
+            self.join(f"first-cohort-peer-{i}")
+        self.run_swarm(
+            "task-add", "--agent", first, "--key", "carry-me", "--kind", "hypothesis",
+            "--title", "Continue this in a fresh context", "--priority", 90,
+        )
+        claimed = self.run_swarm("next", "--agent", first, "--wait", 0, "--quiet", 999)
+        self.run_swarm("leave", "--agent", first, "--summary", "resume carry-me from checkpoint A")
+        ended = self.run_swarm("cohort-end", "--reason", "timebox")
+        self.assertEqual(1, ended["remaining_work"])
+        self.assertFalse(ended["saturation"]["eligible"])
+
+        started = self.run_swarm("cohort-start", "--label", "fresh-2", "--peers", 5)
+        self.assertEqual(2, started["number"])
+        second = self.join("second")
+        for i in range(4):
+            self.join(f"second-cohort-peer-{i}")
+        dossier = self.run_swarm("dossier")
+        self.assertEqual("resume carry-me from checkpoint A", dossier["completed_cohorts"][0]["summary"]["handoffs"][0]["summary"])
+        resumed = self.run_swarm("next", "--agent", second, "--wait", 0, "--quiet", 999)
+        self.assertEqual(claimed["key"], resumed["key"])
+        self.run_swarm("done", "--agent", second, "--work", resumed["id"], "--summary", "completed")
+        self.run_swarm("leave", "--agent", second, "--summary", "no remaining leads")
+        ended = self.run_swarm("cohort-end", "--reason", "second timebox")
+        self.assertTrue(ended["saturation"]["eligible"])
+        self.assertEqual("closed", self.run_swarm("close", "--require-saturation")["status"])
+
+    def test_dossier_does_not_count_stale_peer_as_live(self):
+        agent = self.join("stale")
+        conn = sqlite3.connect(self.db())
+        conn.execute("UPDATE agents SET heartbeat_at=0 WHERE id=?", (agent,))
+        conn.commit()
+        conn.close()
+        dossier = self.run_swarm("dossier")
+        self.assertEqual(0, dossier["active_cohort"]["live_peers"])
+        self.assertEqual("stale", next(a for a in dossier["agents"] if a["id"] == agent)["status"])
+
+    def test_pre_cohort_database_migrates_on_open(self):
+        agent = self.join("legacy-agent")
+        conn = sqlite3.connect(self.db())
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("DROP TABLE cohort_agents")
+        conn.execute("DROP TABLE cohorts")
+        conn.commit()
+        conn.close()
+        dossier = self.run_swarm("dossier")
+        self.assertEqual(1, dossier["active_cohort"]["number"])
+        self.assertEqual(1, dossier["active_cohort"]["joined_peers"])
+        self.assertEqual("wait", self.run_swarm(
+            "next", "--agent", agent, "--wait", 0, "--quiet", 999,
+        )["status"])
 
     def test_scope_change_fails_closed(self):
         (self.home / "scope.yaml").write_text(

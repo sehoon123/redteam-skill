@@ -2,7 +2,7 @@
 
 모든 peer는 동시에 시작하고 동일한 agent profile을 사용한다. 역할은 identity가 아니라
 현재 lease한 work의 `kind`다. 한 peer가 discovery, verification, analysis, synthesis를
-모두 수행할 수 있다.
+모두 수행할 수 있다. Cohort는 phase가 아니라 동일 backlog를 잇는 fresh-context timebox다.
 
 ## 사건에서 가져온 것
 
@@ -15,11 +15,11 @@
 | assignments and subdelegation | any peer can `task-add`; any peer can atomically `next` |
 | HOLD / owner / VETO / STOP | enforced lease / owner; challenge event; operator-only close |
 | Base64 scripts/gadgets/kits | local artifact registry with SHA-256 |
-| independent reproduction triggered mass pivot | finder-excluded verification work + attestation |
-| low-budget agents handed off work | lease expiry and takeover |
-| trip-wire after origin agent exited | durable local event/artifact state; no external callback |
+| independent reproduction triggered mass pivot | finder-excluded attestation activates planned follow-up leases |
+| low-budget agents handed off work | cohort summary + lease expiry + fresh-context takeover |
+| trip-wire after origin agent exited | durable local event/artifact state |
 | thousands of failed paths, later revisited | append-only attempt history + follow-up work |
-| new agents rapidly joined dominant workstream | join-anytime peer reads current dossier and backlog |
+| new agents rapidly joined dominant workstream | repeated five-peer cohorts read the same dossier/backlog |
 
 ## 사건에서 가져오지 않은 것
 
@@ -86,9 +86,10 @@ proposed ──other peer attest──> reproduced | rejected | contested
 3. `attempts`: append-only 결과와 evidence
 
 Surface identity는 agent 별칭이 아니라 canonical `METHOD /path`로 강제되고,
-check synonym은 canonical name으로 정규화된다. Coverage는 `surfaces × checks`의
-관측 상태이며 완전성 주장이 아니다. 동일 조합의 상충 결과도 모두 남고 latest view만
-matrix에 표시된다. `not-applicable`, `blocked`, `partial`을 명시적으로 기록한다.
+check synonym은 canonical name으로 정규화된다. Ready work가 없으면 `next`가 아직 attempt가
+없는 `surface × check`를 canonical `coverage:<surface-id>:<check-id>` lease로 만든다. 따라서
+동시에 호출한 peer들은 서로 다른 미시험 조합을 claim한다. 동일 조합의 상충 결과도 모두
+남고 latest view만 matrix에 표시된다. `not-applicable`, `blocked`, `partial`을 명시적으로 기록한다.
 
 ## Peer algorithm
 
@@ -96,13 +97,13 @@ matrix에 표시된다. `not-applicable`, `blocked`, `partial`을 명시적으�
 join
 cursor = 0
 repeat:
-  read dossier + inbox(cursor) + coverage gaps
-  task = atomic next()
+  read dossier + inbox(cursor) + shared credentials + coverage gaps
+  task = atomic next()  # existing work first, then an auto-materialized coverage gap
   if task:
     execute within scope
     heartbeat while long-running
-    immediately emit intel/artifacts/surfaces/attempts/findings
-    create distinct follow-up work for parallel extension
+    immediately emit messages/artifacts/credentials/surfaces/attempts/findings
+    include distinct follow_ups with a candidate primitive
     done or fail; never silently abandon
   else:
     propose one unexplored hypothesis with canonical key
@@ -131,21 +132,23 @@ METR 보고서에서 PHASEONE[big]도 전체 assignment 중 약 10%만 보냈다
 
 한 agent의 주장만으로 모두 pivot하지 않는다.
 
-1. peer A가 finding + evidence 제안
+1. peer A가 finding + evidence + `details.follow_ups` 제안
 2. ledger가 peer A에게 금지된 verify task 자동 생성
 3. peer B가 fresh context/session으로 reproduction
-4. reproduced이면 여러 **서로 다른** follow-up work 생성
-5. rejected/contested이면 원 finding을 report에서 분리
+4. reproduced이면 ledger가 planned follow-up을 원자적으로 ready work로 활성화
+5. follow-up이 없으면 최소 `pivot` work 하나를 만들어 다른 peer가 distinct variants를 분해
+6. rejected/contested이면 follow-up은 활성화하지 않음
 
 이 규칙은 사건의 "한 agent 발견 → 다른 agent 재현 → 수백 agent pivot" 패턴에서
 성과는 유지하고 false-positive contagion은 차단한다.
 
 ## Handoff and recovery
 
+- `init`은 target size 5인 첫 cohort를 시작
 - 정상 종료: `leave --summary`가 unresolved leads와 artifact reference를 남기고 lease release
-- crash/session reload: lease expiry가 work를 ready로 되돌림
-- 새 peer: `join → dossier → inbox → next`; old chat context 불필요
-- historical research는 `research/board/`, live state와 섞지 않음
+- `cohort-end`: 모든 남은 lease를 ready로 돌리고 peer handoff와 cohort delta를 저장
+- `cohort-start --peers 5`: 새 동일 peer들이 `join → dossier → inbox → next`로 takeover
+- crash/session reload: 같은 cohort 안에서는 lease expiry 뒤 resume
 - current scope hash가 DB와 다르면 모든 command fail closed
 
 ## Artifact rules
@@ -158,19 +161,17 @@ METR 보고서에서 PHASEONE[big]도 전체 assignment 중 약 10%만 보냈다
 
 ## Completion
 
-Peer는 engagement를 닫지 않는다.
+Peer는 engagement를 닫지 않는다. Quiescence/timebox에서 `leave --summary`하고 operator가
+`cohort-end`한다. 다음 fresh five-peer cohort가 누적 ledger를 이어받는다.
 
-`quiescent` 조건:
+`close --require-saturation` 조건:
 
-- ready work 없음
-- unexpired leased work 없음
-- proposed finding/verification backlog 없음
-- meaningful event quiet window 경과
+- target peer 수를 채운 최근 N개 completed cohort(기본 2)가 모두 새 surface 0, reproduced finding 0
+- proposed finding 0
+- ready/leased priority 80+ work 0
 
-독립 verifier가 없는 proposed finding은 `verification-blocked`로 명시되어 operator가
-새 peer를 추가하거나 close하도록 한다. Peer는 quiescent에 handoff 후 나간다. Operator가
-timebox, scope, traffic, report를 검토한 뒤 `close`한다. Report/export는 ledger snapshot이며
-별도 pentest phase가 아니다.
+미시험 coverage는 report에 그대로 남아 operator가 residual gap을 볼 수 있다. 긴급 stop은
+saturation과 무관하게 허용된다. Report/export는 어느 시점에도 같은 ledger snapshot에서 생성된다.
 
 ## Operator metrics, not rewards
 
