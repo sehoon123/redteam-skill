@@ -67,8 +67,8 @@ through the official collaboration tool.
 
 **Implementation:** a bounded rolling supervisor preserves logical slot count. A terminal child is
 recorded before a fresh same-profile context starts. Refusal work becomes terminal `failed`, so
-replacement restores capacity but cannot retry or reroute the refused request. Budget exhaustion
-and recorder failure open a circuit breaker instead of causing a spawn storm.
+replacement restores capacity but cannot retry or reroute the refused request. Budget exhaustion,
+provider rate limits, and recorder failure open a circuit breaker instead of causing a spawn storm.
 
 ### 5. Coordinator was emergent, not a fixed role or phase gate
 

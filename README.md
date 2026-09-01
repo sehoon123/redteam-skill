@@ -16,6 +16,7 @@ transactional ledger에서 스스로 workstream을 만들고 claim·handoff·ver
 - **No live bounty** — reward hacking 대신 operator-only evidence metrics
 - **Fresh-context Luna chain** — 3개 slot × 7개 one-lease child, artifact로만 handoff
 - **Rolling replacement** — refusal 작업은 격리하고 같은 모델의 fresh child로 빈 slot 보충
+- **Mandatory proxy** — curl, Python, browser 모두 127.0.0.1:8080; preflight 전 lease 금지
 
 설계 근거: `RESEARCH.md` (OpenAI technical report, METR, Hugging Face timeline,
 Black Hat 발표). Runtime 규약: `SWARM.md`. 프롬프팅 실험: `PROMPTING-RESEARCH.md`.
@@ -28,6 +29,7 @@ Black Hat 발표). Runtime 규약: `SWARM.md`. 프롬프팅 실험: `PROMPTING-R
 ├── SWARM.md
 ├── RESEARCH.md
 ├── PROMPTING-RESEARCH.md
+├── PROXY.md
 ├── VALIDATION.md
 ├── settings.json
 ├── agents/pentest-peer.md          # Opus autonomous loop
@@ -35,6 +37,7 @@ Black Hat 발표). Runtime 규약: `SWARM.md`. 프롬프팅 실험: `PROMPTING-R
 ├── agents/pentest-peer-luna.md     # one lease, then exit
 ├── agents/pentest-cohort-selector.md # read-only cohort number, xhigh
 ├── agents/pentest-run-recorder.md  # host-verified terminal recording, xhigh
+├── agents/luna-probe.md            # bounded proxy-required Luna experiment
 ├── workflows/cohort.js             # canonical launch; cohort 1 Sonnet, 2+ Opus
 ├── pentest/
 │   ├── swarm.py
@@ -54,10 +57,10 @@ Black Hat 발표). Runtime 규약: `SWARM.md`. 프롬프팅 실험: `PROMPTING-R
 
 ```bash
 mkdir -p .pi/skills/redteam/workflows .pi/agents .pi/pentest
-cp SKILL.md SWARM.md RESEARCH.md PROMPTING-RESEARCH.md VALIDATION.md .pi/skills/redteam/
+cp SKILL.md SWARM.md RESEARCH.md PROMPTING-RESEARCH.md PROXY.md VALIDATION.md .pi/skills/redteam/
 cp workflows/cohort.js .pi/skills/redteam/workflows/
 cp agents/pentest-peer.md agents/pentest-peer-sonnet.md agents/pentest-peer-luna.md \
-  agents/pentest-cohort-selector.md agents/pentest-run-recorder.md .pi/agents/
+  agents/pentest-cohort-selector.md agents/pentest-run-recorder.md agents/luna-probe.md .pi/agents/
 cp -R pentest/. .pi/pentest/
 # settings.json의 override를 .pi/settings.json에 병합
 ```
@@ -109,17 +112,19 @@ Provider ID 확인 방법:
    python3 .pi/pentest/swarm.py init
    python3 .pi/pentest/kb.py index
    ```
-3. `SKILL.md`의 단일 `.pi/skills/redteam/workflows/cohort.js` entrypoint를 실행한다.
+3. `${PENTEST_PROXY:-http://127.0.0.1:8080}` proxy를 시작한다. Peer는 전용 `proxy-check`를
+   통과하기 전 lease를 받지 못하며, Python/browser 설정은 `PROXY.md`를 따른다.
+4. `SKILL.md`의 단일 `.pi/skills/redteam/workflows/cohort.js` entrypoint를 실행한다.
    Workflow가 cohort 1은 Sonnet, cohort 2+는 Opus로 자동 선택한다.
-4. Luna를 별도 `runs.all` 장기 loop에 넣지 않는다. Canonical workflow가 3개 Luna slot을
+5. Luna를 별도 `runs.all` 장기 loop에 넣지 않는다. Canonical workflow가 3개 Luna slot을
    fresh one-shot child로 교체한다. `join`은 기본 one-shot이고 Claude만 `--continuous`를
    사용한다. Ledger는 Luna의 두 번째 lease와 artifact 없는 `done`을 거부한다. Terminal child는
    같은 profile의 fresh generation으로 보충되지만 refusal work 자체는 `failed`로 격리된다.
-5. Workflow 완료 후 parent가 postflight와 다음 cohort를 자동 진행:
+6. Workflow 완료 후 parent가 postflight와 다음 cohort를 자동 진행:
    ```bash
    python3 .pi/pentest/postflight.py <workflow-run-dir>/status.json --end-cohort
    python3 .pi/pentest/swarm.py cohort-start --peers 8
-   python3 .pi/pentest/swarm.py dossier --recent 10 --gap-limit 12
+   python3 .pi/pentest/swarm.py dossier --recent 8 --gap-limit 5 --compact
    python3 .pi/pentest/swarm.py coverage --gaps-only
    python3 .pi/pentest/swarm.py saturation
    python3 .pi/pentest/swarm.py report

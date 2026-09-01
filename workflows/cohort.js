@@ -15,6 +15,7 @@ var claudeAgent = cohortNumber === 1 ? "pentest-peer-sonnet" : "pentest-peer";
 // Worst case: selector 1 + Claude 5×2×(child+recorder) + Luna 3×7×(child+recorder) = 63 runs.
 var maxClaudeGenerations = 2;
 var maxLunaGenerations = 7;
+var maxConsecutiveFailures = 2;
 var control = {
   needsAttentionAfterMs: 180000,
   notifyOn: ["needs_attention"]
@@ -24,6 +25,7 @@ var claudeTask = [
   "너는 인가된 보안 평가의 동일 권한 peer다.",
   "고정 역할과 phase 없이 loaded agent profile의 autonomous loop를 수행해.",
   ".pi/pentest/scope.yaml과 ledger를 authoritative state로 사용해.",
+  "PROXY.md를 읽고 proxy_env.sh를 source한 뒤 proxy-check를 통과해. 모든 curl/Python/browser target traffic은 127.0.0.1:8080을 명시적으로 사용하고 direct fallback하지 마.",
   "발견은 즉시 공유하고 독립 재현하며, 유한 tool timeout을 사용해.",
   "종료 전 leave --summary로 handoff해.",
   "provider refusal은 재시도하거나 다른 모델로 우회하지 마."
@@ -32,6 +34,7 @@ var claudeTask = [
 var lunaTask = [
   "너는 인가된 보안 평가의 동일 권한 fresh-context peer다.",
   "loaded pentest-peer-luna profile의 one-shot lifecycle을 그대로 수행해.",
+  "PROXY.md를 읽고 proxy_env.sh를 source한 뒤 proxy-check를 통과해. 모든 curl/Python/browser target traffic은 127.0.0.1:8080을 명시적으로 사용하고 direct fallback하지 마.",
   "ready work를 최대 한 번 claim하고 한 bounded assertion만 실행해.",
   "결과를 scratch artifact와 ledger에 checkpoint하고 done/fail/attest한 뒤 leave해.",
   "join --one-shot을 사용해. ledger가 두 번째 lease를 거부하므로 continuous loop를 시작하지 마.",
@@ -80,6 +83,11 @@ function terminalCategory(result) {
   return "provider-error";
 }
 
+function opensCircuit(result, category) {
+  var text = [result.error || "", result.output || ""].join(" ").toLowerCase();
+  return category === "budget" || text.includes("too many requests") || text.includes('"code":"429"');
+}
+
 function quoted(value) {
   return JSON.stringify(String(value));
 }
@@ -111,12 +119,13 @@ function recordTerminal(label, result, category) {
   });
 }
 
-function runClaudeSlot(slot, generation) {
+function runClaudeSlot(slot, generation, consecutiveFailures) {
   var label = "claude-" + slot + ".gen-" + generation;
   return runs.run(label, {
     agent: claudeAgent,
     context: "fresh",
     timeoutMs: 1800000,
+    acceptance: false,
     task: claudeTask + " label은 '" + label + "'이다.",
     control: control
   }).then(function (result) {
@@ -127,21 +136,24 @@ function runClaudeSlot(slot, generation) {
     return recordTerminal(label, result, category).then(function (recorded) {
       var receipt = recorded.structuredOutput || {};
       var recorderOk = recorded.ok === true && receipt.recorded === true && receipt.category === category;
-      if (!recorderOk || category === "budget" || generation >= maxClaudeGenerations) {
-        return { slot: "claude-" + slot, generation: generation, category: category, recorderOk: recorderOk };
+      var failures = consecutiveFailures + 1;
+      if (!recorderOk || opensCircuit(result, category) || failures >= maxConsecutiveFailures ||
+          generation >= maxClaudeGenerations) {
+        return { slot: "claude-" + slot, generation: generation, category: category, recorderOk: recorderOk, consecutiveFailures: failures };
       }
-      return runClaudeSlot(slot, generation + 1);
+      return runClaudeSlot(slot, generation + 1, failures);
     });
   });
 }
 
-function runLunaSlot(slot, generation) {
+function runLunaSlot(slot, generation, consecutiveFailures) {
   var label = "luna-" + slot + ".gen-" + generation;
   return runs.run(label, {
     agent: "pentest-peer-luna",
     context: "fresh",
     timeoutMs: 600000,
     outputSchema: lunaResult,
+    acceptance: false,
     task: lunaTask + " label은 '" + label + "'이다.",
     control: control
   }).then(function (result) {
@@ -150,28 +162,30 @@ function runLunaSlot(slot, generation) {
       if (generation >= maxLunaGenerations) {
         return { slot: "luna-" + slot, generation: generation, category: category, runId: result.runId };
       }
-      return runLunaSlot(slot, generation + 1);
+      return runLunaSlot(slot, generation + 1, 0);
     }
     return recordTerminal(label, result, category).then(function (recorded) {
       var receipt = recorded.structuredOutput || {};
       var recorderOk = recorded.ok === true && receipt.recorded === true && receipt.category === category;
-      if (!recorderOk || category === "budget" || generation >= maxLunaGenerations) {
-        return { slot: "luna-" + slot, generation: generation, category: category, recorderOk: recorderOk };
+      var failures = consecutiveFailures + 1;
+      if (!recorderOk || opensCircuit(result, category) || failures >= maxConsecutiveFailures ||
+          generation >= maxLunaGenerations) {
+        return { slot: "luna-" + slot, generation: generation, category: category, recorderOk: recorderOk, consecutiveFailures: failures };
       }
-      return runLunaSlot(slot, generation + 1);
+      return runLunaSlot(slot, generation + 1, failures);
     });
   });
 }
 
 var slots = await Promise.all([
-  runClaudeSlot(1, 1),
-  runClaudeSlot(2, 1),
-  runClaudeSlot(3, 1),
-  runClaudeSlot(4, 1),
-  runClaudeSlot(5, 1),
-  runLunaSlot(1, 1),
-  runLunaSlot(2, 1),
-  runLunaSlot(3, 1)
+  runClaudeSlot(1, 1, 0),
+  runClaudeSlot(2, 1, 0),
+  runClaudeSlot(3, 1, 0),
+  runClaudeSlot(4, 1, 0),
+  runClaudeSlot(5, 1, 0),
+  runLunaSlot(1, 1, 0),
+  runLunaSlot(2, 1, 0),
+  runLunaSlot(3, 1, 0)
 ]);
 
 return { cohortNumber: cohortNumber, claudeAgent: claudeAgent, slots: slots };

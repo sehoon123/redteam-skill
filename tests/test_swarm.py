@@ -1,8 +1,10 @@
 import concurrent.futures
 import json
 import os
+import socket
 import sqlite3
 import subprocess
+import threading
 import tempfile
 import time
 import unittest
@@ -44,7 +46,9 @@ class CliTest(unittest.TestCase):
         return self.run_cli(SWARM, *args, check=check)
 
     def join(self, label):
-        return self.run_swarm("join", "--label", label, "--continuous")["agent"]
+        return self.run_swarm(
+            "join", "--label", label, "--continuous", "--no-proxy-required",
+        )["agent"]
 
     def db(self):
         return self.home / "state" / "TEST-001.sqlite3"
@@ -63,12 +67,21 @@ class CliTest(unittest.TestCase):
         self.assertEqual(base, extract_invariants(sonnet))
         for profile in (claude, luna, sonnet):
             self.assertIn("--label '<assigned-label>'", profile)
+            self.assertIn("--proxy-required", profile)
+            self.assertIn("proxy-check", profile)
+            self.assertIn("Python must use explicit", profile)
             self.assertNotIn("--label peer-N", profile)
 
     def test_all_agent_profiles_use_xhigh_or_max(self):
         for path in (ROOT / "agents").glob("*.md"):
             text = path.read_text()
             self.assertTrue("thinking: xhigh" in text or "thinking: max" in text, path.name)
+
+    def test_luna_probe_also_forbids_direct_traffic(self):
+        probe = (ROOT / "agents" / "luna-probe.md").read_text()
+        self.assertIn("PENTEST_PROXY", probe)
+        self.assertIn("no direct fallback", probe)
+        self.assertIn("Python must use", probe)
 
     def test_luna_profile_is_one_lease_only(self):
         luna = (ROOT / "agents" / "pentest-peer-luna.md").read_text()
@@ -83,14 +96,69 @@ class CliTest(unittest.TestCase):
         self.assertNotIn("--continuous", luna)
         self.assertEqual(1, luna.count('swarm.py next --agent "$AGENT"'))
 
+    def test_proxy_required_agent_cannot_claim_before_scoped_connect(self):
+        creator = self.join("creator")
+        joined = self.run_swarm(
+            "join", "--label", "proxied-peer", "--continuous",
+        )
+        agent = joined["agent"]
+        self.assertTrue(joined["proxy_required"])
+        self.run_swarm(
+            "task-add", "--agent", creator, "--key", "proxied-work",
+            "--kind", "hypothesis", "--title", "proxied work",
+        )
+        blocked = self.run_swarm(
+            "next", "--agent", agent, "--wait", 0, "--quiet", 999,
+        )
+        self.assertEqual("proxy-required", blocked["status"])
+        spoof = self.run_swarm(
+            "emit", "--agent", agent, "--kind", "proxy.checked", "--body", "fake",
+            check=False,
+        )
+        self.assertIn("reserved event kind", spoof.stderr)
+
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        listener.settimeout(3)
+        port = listener.getsockname()[1]
+        captured = []
+
+        def accept_once():
+            conn, _ = listener.accept()
+            with conn:
+                data = b""
+                while b"\r\n\r\n" not in data:
+                    data += conn.recv(2048)
+                captured.append(data.decode("latin1"))
+                conn.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+            listener.close()
+
+        thread = threading.Thread(target=accept_once, daemon=True)
+        thread.start()
+        checked = self.run_swarm(
+            "proxy-check", "--agent", agent,
+            "--proxy", f"http://127.0.0.1:{port}", "--timeout", 2,
+        )
+        thread.join(2)
+        self.assertEqual(200, checked["status"])
+        self.assertIn("CONNECT example.test:443", captured[0])
+        self.assertIn(f"X-Redteam-Agent: {agent}", captured[0])
+        claimed = self.run_swarm(
+            "next", "--agent", agent, "--wait", 0, "--quiet", 999,
+        )
+        self.assertEqual("proxied-work", claimed["key"])
+
     def test_one_shot_agent_cannot_claim_a_second_lease(self):
         creator = self.join("creator")
         # Safe default: omitting an execution mode is still one-shot.
-        joined = self.run_swarm("join", "--label", "luna-slot-1.fresh-1")
+        joined = self.run_swarm(
+            "join", "--label", "luna-slot-1.fresh-1", "--no-proxy-required",
+        )
         luna = joined["agent"]
         self.assertEqual(1, joined["max_claims"])
         duplicate = self.run_swarm(
-            "join", "--label", "luna-slot-1.fresh-1", check=False,
+            "join", "--label", "luna-slot-1.fresh-1", "--no-proxy-required", check=False,
         )
         self.assertIn("agent label already joined", duplicate.stderr)
         for key in ("first", "second"):
@@ -125,7 +193,7 @@ class CliTest(unittest.TestCase):
     def test_refusal_leave_quarantines_work_before_slot_replacement(self):
         creator = self.join("creator")
         refused = self.run_swarm(
-            "join", "--label", "luna-1.gen-1", "--one-shot",
+            "join", "--label", "luna-1.gen-1", "--one-shot", "--no-proxy-required",
         )["agent"]
         for key in ("refused-work", "other-work"):
             self.run_swarm(
@@ -162,7 +230,7 @@ class CliTest(unittest.TestCase):
         self.assertIn("category mismatch", mismatch.stderr)
 
         replacement = self.run_swarm(
-            "join", "--label", "luna-1.gen-2", "--one-shot",
+            "join", "--label", "luna-1.gen-2", "--one-shot", "--no-proxy-required",
         )["agent"]
         next_work = self.run_swarm(
             "next", "--agent", replacement, "--wait", 0, "--quiet", 999,
@@ -190,11 +258,13 @@ class CliTest(unittest.TestCase):
         self.assertIn('cohortNumber === 1 ? "pentest-peer-sonnet" : "pentest-peer"', script)
         self.assertIn("maxClaudeGenerations = 2", script)
         self.assertIn("maxLunaGenerations = 7", script)
+        self.assertIn("maxConsecutiveFailures = 2", script)
         self.assertIn("= 63 runs", script)
         self.assertIn("Promise.all", script)
         self.assertNotIn("runs.lanes", script)
         self.assertNotIn('resume: "previous"', script)
         self.assertIn("function runClaudeSlot", script)
+        self.assertEqual(2, script.count("acceptance: false"))
         self.assertIn("timeoutMs: 1800000", script)
         self.assertIn("function runLunaSlot", script)
         self.assertIn("function recordTerminal", script)
@@ -204,10 +274,13 @@ class CliTest(unittest.TestCase):
         self.assertIn("Run exactly this local command", script)
         self.assertIn('agent: "pentest-peer-luna"', script)
         self.assertIn('context: "fresh"', script)
-        self.assertIn("return runClaudeSlot(slot, generation + 1)", script)
-        self.assertIn("return runLunaSlot(slot, generation + 1)", script)
+        self.assertIn("return runClaudeSlot(slot, generation + 1, failures)", script)
+        self.assertIn("return runLunaSlot(slot, generation + 1, 0)", script)
+        self.assertIn("return runLunaSlot(slot, generation + 1, failures)", script)
         self.assertIn("receipt.recorded === true", script)
         self.assertIn("receipt.category === category", script)
+        self.assertIn("function opensCircuit", script)
+        self.assertIn("too many requests", script)
         self.assertIn('category === "budget"', script)
         self.assertIn('verdict: { type: "string", enum: ["complete", "blocked"] }', script)
 
@@ -215,6 +288,13 @@ class CliTest(unittest.TestCase):
         skill = (ROOT / "SKILL.md").read_text()
         research = (ROOT / "PROMPTING-RESEARCH.md").read_text()
         self.assertIn("workflows/cohort.js", skill)
+        self.assertIn("PROXY.md", skill)
+        proxy_doc = (ROOT / "PROXY.md").read_text()
+        proxy_env = (ROOT / "pentest" / "proxy_env.sh").read_text()
+        self.assertIn("Python requests", proxy_doc)
+        self.assertIn("aiohttp", proxy_doc)
+        self.assertIn("Playwright", proxy_doc)
+        self.assertIn("HTTPS_PROXY", proxy_env)
         self.assertIn("globalConcurrencyLimit: 8", skill)
         self.assertIn("maxSubagentSpawnsPerRun: 63", skill)
         self.assertNotIn("workflows/cohort-sonnet.js", skill)
@@ -255,7 +335,9 @@ class CliTest(unittest.TestCase):
         self.assertEqual("wait", result["status"])
 
     def test_bounded_dossier_and_collaboration_inbox(self):
-        joined = self.run_swarm("join", "--label", "peer", "--continuous")
+        joined = self.run_swarm(
+            "join", "--label", "peer", "--continuous", "--no-proxy-required",
+        )
         agent, cursor = joined["agent"], joined["cursor"]
         self.run_swarm("surface-add", "--agent", agent, "--path", "/one")
         self.run_swarm("surface-add", "--agent", agent, "--path", "/two")
@@ -271,6 +353,17 @@ class CliTest(unittest.TestCase):
         self.assertEqual(20, len(dossier["coverage"]["gaps"]))
         self.assertGreater(dossier["coverage"]["gaps_total"], 20)
         self.assertEqual([], self.run_swarm("dossier", "--gap-limit", 0)["coverage"]["gaps"])
+        compact = self.run_swarm(
+            "dossier", "--recent", 10, "--gap-limit", 3, "--compact",
+        )
+        self.assertEqual(3, len(compact["coverage"]["gaps"]))
+        self.assertNotIn("surface.discovered", {event["kind"] for event in compact["recent_events"]})
+        self.assertTrue(all(
+            len(json.dumps(event["body"], ensure_ascii=False)) <= 600
+            for event in compact["recent_events"]
+        ))
+        self.assertLessEqual(len(compact["completed_cohorts"]), 1)
+        self.assertTrue(all(agent["status"] in {"active", "idle"} for agent in compact["agents"]))
 
     def test_postflight_classifies_failures_and_releases_leases(self):
         luna = self.join("luna-1.gen-1")

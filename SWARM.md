@@ -18,6 +18,7 @@ fresh context마다 lease 하나. Cohort는 phase가 아니라 동일 backlog를
 | Base64 scripts/gadgets/kits | local artifact registry with SHA-256 |
 | independent reproduction triggered mass pivot | finder-excluded attestation activates planned follow-up leases |
 | ended agents handed off work | rolling slot replacement + cohort summary + fresh-context takeover |
+| shared traffic visibility | mandatory local proxy preflight + explicit tool proxy configuration |
 | trip-wire after origin agent exited | durable local event/artifact state |
 | thousands of failed paths, later revisited | append-only attempt history + follow-up work |
 | new agents rapidly joined dominant workstream | eight concurrent slots; fresh replacements read the same dossier/backlog |
@@ -106,6 +107,10 @@ join → bounded dossier/inbox → atomic next()
 leave(summary)
 ```
 
+`join`은 기본 proxy-required다. Peer는 전용 `proxy-check`가 scoped CONNECT를 성공해 `proxy.checked`를 남기기
+전에는 `next`가 work를 주지 않는다. Generic event로 이 상태를 위조할 수 없다. 모든 실제
+curl/Python/browser target request도 `PROXY.md`의 explicit proxy 설정을 사용한다.
+
 `join`은 기본 one-shot이다. Claude profile만 `--continuous`를 명시해 atomic unit을
 quiescence/timebox까지 반복한다. Luna profile은 `--one-shot`으로 등록되어 ledger가 두 번째
 lease와 artifact 없는 `done`을 거부하고 unit 하나 뒤 종료한다. Rolling supervisor가 같은
@@ -143,12 +148,13 @@ METR 보고서에서 PHASEONE[big]도 전체 assignment 중 약 10%만 보냈다
 
 - `init`은 concurrent slot target 8인 첫 cohort를 시작; Luna fresh replacements 때문에 joined actor 수는 8보다 클 수 있음
 - 정상 종료: `leave --summary`가 unresolved leads와 artifact reference를 남기고 lease release
+- `proxy.checked` 없는 proxy-required agent는 lease claim 불가; proxy 실패 시 direct fallback 금지
 - child terminal failure는 rolling supervisor가 즉시 `run-result`로 기록한 뒤 slot을 보충
 - agent-visible refusal은 `task.blocked` + `leave --refusal`; flag가 빠져도 blocked event가 lease를 원자적으로 `failed` 처리
 - abrupt provider refusal은 recorder의 host-verified gate가 leased work를 `failed` 처리한 뒤 replacement 시작
 - replacement는 refused work가 아니라 다른 ready work를 claim
 - replacement는 같은 profile/model의 fresh context이며 fallback/model reroute가 아님
-- budget 또는 recorder failure는 circuit breaker; generation cap 이후 추가 spawn 없음
+- budget, provider 429/rate-limit, recorder failure, 동일 slot 연속 failure 2회는 circuit breaker
 - final `postflight.py`는 이미 기록된 run ID를 idempotently 확인하고 남은 lease를 정리
 - `cohort-end`: 남은 lease를 ready로 돌리고 peer handoff, run results, cohort delta를 저장
 - `cohort-start --peers 8`: canonical workflow의 새 동일-authority slots가 ledger를 takeover

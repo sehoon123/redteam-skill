@@ -33,7 +33,7 @@ OpenAI–Hugging Face 사건에서 실제 성과를 만든 패턴만 안전하�
 
 - `.pi/pentest/scope.yaml`의 명시적 authorization과 target
 - 네트워크 allowlist/격리, rate limit, kill switch
-- 필요하면 Burp (`127.0.0.1:8080`)
+- 필수 intercepting proxy (`${PENTEST_PROXY:-http://127.0.0.1:8080}`); direct target egress 금지
 
 `swarm.py`는 scope 파일 hash를 engagement에 고정한다. 실행 중 scope가 바뀌면
 fail closed. 실제 네트워크 차단은 반드시 infrastructure layer에서 집행한다.
@@ -42,10 +42,10 @@ fail closed. 실제 네트워크 차단은 반드시 infrastructure layer에서 
 
 ```bash
 mkdir -p .pi/skills/redteam/workflows .pi/agents .pi/pentest
-cp SKILL.md SWARM.md RESEARCH.md PROMPTING-RESEARCH.md VALIDATION.md .pi/skills/redteam/
+cp SKILL.md SWARM.md RESEARCH.md PROMPTING-RESEARCH.md PROXY.md VALIDATION.md .pi/skills/redteam/
 cp workflows/cohort.js .pi/skills/redteam/workflows/
 cp agents/pentest-peer.md agents/pentest-peer-sonnet.md agents/pentest-peer-luna.md \
-  agents/pentest-cohort-selector.md agents/pentest-run-recorder.md .pi/agents/
+  agents/pentest-cohort-selector.md agents/pentest-run-recorder.md agents/luna-probe.md .pi/agents/
 cp -R pentest/. .pi/pentest/
 # settings.json의 세 peer override를 .pi/settings.json에 병합
 ```
@@ -76,6 +76,23 @@ python3 .pi/pentest/kb.py index
 `init` is idempotent for the same scope hash and starts `cohort-1` with a target of eight
 concurrent equal-authority slots. Luna fresh replacements may create more than eight joined actor
 records. A changed scope requires a new `engagement_id`; old work cannot silently cross engagements.
+
+## Mandatory proxy contract
+
+모든 target traffic은 `${PENTEST_PROXY:-http://127.0.0.1:8080}`을 통과해야 한다. Optional
+fallback이 아니다. `join`의 안전한 기본값은 proxy-required이며 peer는 이를 명시한 뒤 다음 순서를 지킨다:
+
+```bash
+. .pi/pentest/proxy_env.sh
+python3 .pi/pentest/swarm.py proxy-check --agent "$AGENT" \
+  --proxy "$PENTEST_PROXY" --timeout 5
+```
+
+Ledger는 `proxy.checked`가 없으면 `next`에서 lease를 주지 않는다. 이후에도 매 새 shell에서
+`proxy_env.sh`를 source한다. Curl은 `--proxy`, Python은 `requests.proxies`/`ProxyHandler`/
+`httpx proxy=`/`aiohttp trust_env=True`, browser는 `--proxy-server`를 명시한다. 자세한 도구별
+예시는 `PROXY.md`. Proxy 실패 시 target에 direct 연결하지 말고 checkpoint 후 leave한다.
+완전한 강제는 operator infrastructure가 proxy process 외 direct egress를 차단해야 한다.
 
 ## Canonical launch — 이 경로만 사용
 
@@ -119,7 +136,9 @@ Workflow 실행 계약:
 - replacement는 refused work가 아닌 다른 ready work를 claim
 - replacement는 같은 agent profile/model을 사용하며 fallback이나 model reroute가 아님
 - Claude slot은 initial + replacement 1회, Luna slot은 전체 7 generations로 bounded
-- `budget` 또는 recorder failure는 circuit breaker로 replacement를 중단
+- `budget`, provider 429/rate-limit, recorder failure 또는 동일 slot 연속 failure 2회는 circuit breaker
+- 각 peer는 proxy-check 성공 전 lease를 받지 못하며 curl/Python/browser 모두 explicit proxy 사용
+- peer runs는 `acceptance:false`; artifact/attempt/finding ledger가 evidence contract이며 중복 harness 보고서 주입을 피함
 - 대화 transcript 대신 SQLite ledger와 scratch artifact만 replacement에 전달
 - actor label은 dynamic workflow key와 동일하고 cohort 내 중복 join이 거부됨
 
@@ -190,7 +209,7 @@ join(cursor) → bounded dossier/collaboration inbox/credentials → next(atomic
 
 ```bash
 S=.pi/pentest/swarm.py
-python3 "$S" dossier --recent 10 --gap-limit 12
+python3 "$S" dossier --recent 8 --gap-limit 5 --compact
 python3 "$S" inbox --agent "$AGENT" --after "$CURSOR" --limit 25 --collaboration-only
 python3 "$S" task-add --agent "$AGENT" --key 'GET:/catalog:server-input:boolean' \
   --kind hypothesis --title 'Analyze category input behavior'
@@ -253,7 +272,7 @@ run-result, 미완료 work, surface/finding/attempt delta가 고정된다. 다�
 ```bash
 python3 .pi/pentest/swarm.py cohort-end --reason 'timebox complete'
 python3 .pi/pentest/swarm.py cohort-start --label next-fresh-context --peers 8
-python3 .pi/pentest/swarm.py dossier --recent 10 --gap-limit 12
+python3 .pi/pentest/swarm.py dossier --recent 8 --gap-limit 5 --compact
 ```
 
 `saturation`은 target peer 수를 채운 연속 2개 completed cohort에서 새 surface와 reproduced
@@ -325,4 +344,5 @@ Engagement가 유효하려면:
 - 모든 Luna stage가 새 `agent` + `context: "fresh"`이고 `resume: "previous"`를 쓰지 않음
 - `join`은 기본 one-shot이며 Claude만 `--continuous`; ledger가 Luna의 두 번째 lease를 거부함
 - one-shot work는 등록된 work artifact 없이는 ledger가 `done`을 거부함
-- agent-visible refusal은 structured `verdict=blocked,outcome=refusal`로 lane과 postflight에 전달됨
+- agent-visible refusal은 structured `verdict=blocked,outcome=refusal`로 rolling supervisor와 postflight에 전달됨
+- proxy-required peer는 `proxy.checked` 전 lease를 받을 수 없고 direct fallback 지침이 없음

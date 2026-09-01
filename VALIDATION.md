@@ -116,3 +116,43 @@ call. Because provider termination can occur before an agent emits `task.blocked
 the runtime now includes parent-side `postflight.py`, idempotent `run-result` records, immediate
 lease recovery, bounded dossier/inbox output, finite tool timeouts, and run-result metrics.
 Refusals are recorded but never retried or rerouted to another model.
+
+## Proxy enforcement validation — 2026-09-01
+
+A temporary stdlib CONNECT proxy bound only to `127.0.0.1:8080` and allowed only
+`ginandjuice.shop:443`. Parent probes confirmed both explicit curl and Python `urllib` requests
+returned HTTP 200 through the proxy. The proxy log recorded both CONNECT tunnels.
+
+Three equal-authority live peers (Opus, Sonnet, Luna) were then launched with one-lease proxy audit
+instructions. Observed behavior:
+
+- Sonnet joined, ran ledger `proxy-check`, and produced a proxy log entry containing its exact agent
+  ID before `next` allowed it to claim `verify:FIND-0006`.
+- No direct target connection from that peer appeared in the proxy log; repeated provider 429s stopped
+  it before its actual network assertion.
+- Opus spent the five-minute probe budget in startup/reasoning and never joined.
+- Luna made no tool call before the five-minute timeout.
+- All three terminal timeouts were recorded by postflight; the Sonnet lease had already expired back
+  to ready. No new finding or target assertion was claimed from this probe.
+
+Operational lessons and fixes:
+
+1. “Proxy available” prose was too weak. `join` is now proxy-required by default and `next` refuses a
+   lease until dedicated `proxy-check` records a scoped CONNECT success.
+2. Curl-only guidance was insufficient. `proxy_env.sh` exports upper/lowercase proxy variables, while
+   `PROXY.md` requires explicit settings for requests, urllib, httpx, aiohttp, Playwright, Selenium,
+   Chromium/CDP, wget, and Node.
+3. Shell state does not persist between tool calls, so peers must source `proxy_env.sh` in every new
+   shell. Libraries that ignore environment proxies must use their own `proxy=` or `trust_env=True`.
+4. Preflight evidence proves the proxy was reachable, not that every later library obeyed it. Real
+   enforcement still requires operator egress rules that block direct target traffic from peers.
+5. Full dossier/startup overhead can consume most of a short operation window. OpenAI/HF-like fresh
+   capacity only helps when replacements receive compressed state and enough execution time. Startup
+   now uses `dossier --compact --recent 8 --gap-limit 5`; on the live GJ02 ledger this reduced startup
+   JSON from 7,381 to 4,222 bytes (43%). Proxy smoke checks stay separate from deep autonomous leases.
+6. Sonnet hit repeated provider 429 responses after preflight. Rolling replacement now treats
+   `Too Many Requests`/429 as an immediate circuit breaker; two consecutive terminal failures in one
+   slot also stop replenishment even when the final provider message hides the earlier 429.
+7. The harness auto-injected a long acceptance-report contract into mutation-capable peers even though
+   the SQLite ledger already supplies evidence acceptance. Canonical peer launches now use
+   `acceptance:false`; selector structured output and recorder host verification remain enforced.
