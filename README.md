@@ -17,6 +17,7 @@ transactional ledger에서 스스로 workstream을 만들고 claim·handoff·ver
 - **Fresh-context Luna chain** — 3개 slot × 7개 one-lease child, artifact로만 handoff
 - **Rolling replacement** — refusal 작업은 격리하고 같은 모델의 fresh child로 빈 slot 보충
 - **Mandatory proxy** — curl, Python, browser 모두 127.0.0.1:8080; preflight 전 lease 금지
+- **Site isolation** — scope/DB/evidence/report/KB를 engagement workspace별 분리
 
 설계 근거: `RESEARCH.md` (OpenAI technical report, METR, Hugging Face timeline,
 Black Hat 발표). Runtime 규약: `SWARM.md`. 프롬프팅 실험: `PROMPTING-RESEARCH.md`.
@@ -30,6 +31,7 @@ Black Hat 발표). Runtime 규약: `SWARM.md`. 프롬프팅 실험: `PROMPTING-R
 ├── RESEARCH.md
 ├── PROMPTING-RESEARCH.md
 ├── PROXY.md
+├── WORKSPACES.md
 ├── VALIDATION.md
 ├── settings.json
 ├── agents/pentest-peer.md          # Opus autonomous loop
@@ -43,13 +45,12 @@ Black Hat 발표). Runtime 규약: `SWARM.md`. 프롬프팅 실험: `PROMPTING-R
 │   ├── swarm.py
 │   ├── postflight.py          # parent-side terminal-result/lease recovery
 │   ├── kb.py
-│   ├── scope.yaml
-│   ├── research/board/      # 187-test historical corpus
-│   ├── board/               # post-run export only
-│   ├── findings/
-│   ├── scratch/
-│   ├── memory/
-│   └── state/
+│   ├── active-engagement
+│   ├── engagements/<id>/
+│   │   ├── scope.yaml
+│   │   └── state/ scratch/ findings/ board/ memory/ cache/
+│   ├── workspace.py / engagement_env.sh
+│   └── research/board/      # shared read-only operational research
 └── tests/test_swarm.py
 ```
 
@@ -57,7 +58,7 @@ Black Hat 발표). Runtime 규약: `SWARM.md`. 프롬프팅 실험: `PROMPTING-R
 
 ```bash
 mkdir -p .pi/skills/redteam/workflows .pi/agents .pi/pentest
-cp SKILL.md SWARM.md RESEARCH.md PROMPTING-RESEARCH.md PROXY.md VALIDATION.md .pi/skills/redteam/
+cp SKILL.md SWARM.md RESEARCH.md PROMPTING-RESEARCH.md PROXY.md WORKSPACES.md VALIDATION.md .pi/skills/redteam/
 cp workflows/cohort.js .pi/skills/redteam/workflows/
 cp agents/pentest-peer.md agents/pentest-peer-sonnet.md agents/pentest-peer-luna.md \
   agents/pentest-cohort-selector.md agents/pentest-run-recorder.md agents/luna-probe.md .pi/agents/
@@ -106,12 +107,14 @@ Provider ID 확인 방법:
 
 ## 사용
 
-1. `.pi/pentest/scope.yaml` 작성
-2. 초기화:
+1. Site별 scope와 workspace 생성·선택:
    ```bash
+   python3 .pi/pentest/workspace.py create --id SITE-A --scope scopes/site-a.yaml
+   python3 .pi/pentest/workspace.py use --id SITE-A
    python3 .pi/pentest/swarm.py init
    python3 .pi/pentest/kb.py index
    ```
+2. 동시 site 운영은 site별 Pi process를 `PENTEST_ENGAGEMENT=SITE-A pi`로 시작한다.
 3. `${PENTEST_PROXY:-http://127.0.0.1:8080}` proxy를 시작한다. Peer는 전용 `proxy-check`를
    통과하기 전 lease를 받지 못하며, Python/browser 설정은 `PROXY.md`를 따른다.
 4. `SKILL.md`의 단일 `.pi/skills/redteam/workflows/cohort.js` entrypoint를 실행한다.

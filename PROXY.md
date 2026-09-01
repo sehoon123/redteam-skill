@@ -6,6 +6,7 @@ direct fallback. If proxy preflight fails, do not contact the target; checkpoint
 ## Required startup
 
 ```bash
+. .pi/pentest/engagement_env.sh
 . .pi/pentest/proxy_env.sh
 python3 .pi/pentest/swarm.py proxy-check --agent "$AGENT" \
   --proxy "$PENTEST_PROXY" --timeout 5
@@ -16,16 +17,19 @@ refuses a lease until the dedicated `proxy-check` command has
 successfully opened a scoped CONNECT tunnel and recorded `proxy.checked`. Generic `emit` cannot
 forge this event.
 
-Source `proxy_env.sh` in every new shell tool call; shell environments do not persist between calls.
+Source both `engagement_env.sh` and `proxy_env.sh` in every new shell tool call; shell environments
+do not persist between calls.
 
 ## Tool settings
 
 ### curl
 
 ```bash
+. .pi/pentest/engagement_env.sh
 . .pi/pentest/proxy_env.sh
 curl --proxy "$PENTEST_PROXY" \
   --proxy-header "X-Redteam-Agent: $AGENT" \
+  --proxy-header "X-Redteam-Engagement: $PENTEST_ENGAGEMENT_ID" \
   --connect-timeout 10 --max-time 30 https://ginandjuice.shop/
 ```
 
@@ -80,6 +84,7 @@ browser = await playwright.chromium.launch(proxy={"server": proxy})
 
 ## Evidence
 
-The local proxy log and ledger `proxy.checked` event establish preflight use. They do not prove every
+The CONNECT preflight carries both `X-Redteam-Agent` and `X-Redteam-Engagement`; the local proxy log
+and ledger `proxy.checked` event establish site-attributed preflight use. They do not prove every
 later library honored proxy settings. Production enforcement therefore also requires infrastructure
 egres rules that permit target traffic only from the proxy process.

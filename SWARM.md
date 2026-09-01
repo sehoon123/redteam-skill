@@ -32,9 +32,16 @@ fresh context마다 lease 하나. Cohort는 phase가 아니라 동일 backlog를
 - social `HOLD`를 lock처럼 신뢰하기
 - agent가 operator `STOP`을 무시하는 구조
 
+## Workspace isolation
+
+각 site는 `.pi/pentest/engagements/<id>/` 아래 독립 `scope.yaml`, state, scratch, findings,
+board, memory, cache를 가진다. `active-engagement`는 순차 실행 전용이며 workflow 실행 중에는
+바꾸지 않는다. 동시 site는 site별 Pi process에서 `PENTEST_ENGAGEMENT=<id>`를 사용한다.
+Selection이 없으면 legacy single-site layout을 유지한다. 자세한 규칙은 `WORKSPACES.md`.
+
 ## Authoritative state
 
-`state/<engagement>.sqlite3`만 authoritative. JSONL은 사후 export다.
+선택된 workspace의 `state/<engagement>.sqlite3`만 authoritative. JSONL은 사후 export다.
 
 ### Event
 
@@ -160,10 +167,11 @@ METR 보고서에서 PHASEONE[big]도 전체 assignment 중 약 10%만 보냈다
 - `cohort-start --peers 8`: canonical workflow의 새 동일-authority slots가 ledger를 takeover
 - crash/session reload: lease expiry 뒤 fresh peer가 ledger/artifact에서 takeover
 - current scope hash가 DB와 다르면 모든 command fail closed
+- 다른 engagement workspace의 state/evidence/report 경로는 읽거나 쓰지 않음
 
 ## Artifact rules
 
-- `.pi/pentest/scratch/` 안에만 durable PoC/capture/tool 저장
+- `engagement_env.sh`가 지정한 `$PENTEST_SCRATCH` 안에만 durable PoC/capture/tool 저장
 - `artifact-add` 후 SHA-256을 message/work/finding에서 참조
 - 동일 artifact를 수정하면 새 hash로 새 revision 등록
 - 외부 pastebin/dataset/dead drop은 금지

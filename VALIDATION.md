@@ -156,3 +156,11 @@ Operational lessons and fixes:
 7. The harness auto-injected a long acceptance-report contract into mutation-capable peers even though
    the SQLite ledger already supplies evidence acceptance. Canonical peer launches now use
    `acceptance:false`; selector structured output and recorder host verification remain enforced.
+
+## Multi-site isolation validation — 2026-09-01
+
+A temporary runtime created `SITE-A` and `SITE-B` under one project root. Each scope initialized its
+own SQLite ledger and FTS database; identically named scratch files retained different contents; and
+`report` wrote to distinct findings directories. The atomic active pointer selected SITE-A, while a
+process-local `PENTEST_ENGAGEMENT=SITE-B` override resolved SITE-B without changing the pointer.
+Legacy `PENTEST_HOME` tests continue to pass.

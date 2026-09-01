@@ -31,7 +31,7 @@ OpenAI–Hugging Face 사건에서 실제 성과를 만든 패턴만 안전하�
 
 실행 전에 operator가 제공해야 한다:
 
-- `.pi/pentest/scope.yaml`의 명시적 authorization과 target
+- 선택된 engagement workspace의 `scope.yaml`에 명시적 authorization과 target
 - 네트워크 allowlist/격리, rate limit, kill switch
 - 필수 intercepting proxy (`${PENTEST_PROXY:-http://127.0.0.1:8080}`); direct target egress 금지
 
@@ -42,7 +42,7 @@ fail closed. 실제 네트워크 차단은 반드시 infrastructure layer에서 
 
 ```bash
 mkdir -p .pi/skills/redteam/workflows .pi/agents .pi/pentest
-cp SKILL.md SWARM.md RESEARCH.md PROMPTING-RESEARCH.md PROXY.md VALIDATION.md .pi/skills/redteam/
+cp SKILL.md SWARM.md RESEARCH.md PROMPTING-RESEARCH.md PROXY.md WORKSPACES.md VALIDATION.md .pi/skills/redteam/
 cp workflows/cohort.js .pi/skills/redteam/workflows/
 cp agents/pentest-peer.md agents/pentest-peer-sonnet.md agents/pentest-peer-luna.md \
   agents/pentest-cohort-selector.md agents/pentest-run-recorder.md agents/luna-probe.md .pi/agents/
@@ -50,28 +50,37 @@ cp -R pentest/. .pi/pentest/
 # settings.json의 세 peer override를 .pi/settings.json에 병합
 ```
 
-Live state와 연구 corpus는 분리된다:
+Runtime code와 site data는 분리된다:
 
 ```
 .pi/pentest/
-├── scope.yaml
-├── swarm.py                 # authoritative live ledger
-├── postflight.py            # parent-side terminal result + lease recovery
-├── kb.py                    # FTS5 trigram research/memory search
-├── state/<engagement>.sqlite3
-├── board/                   # operator export only; peers do not append
-├── findings/report.md       # deterministic export
-├── scratch/                 # PoC/evidence/tools
-├── memory/                  # cross-engagement curated knowledge
-└── research/board/          # 187-test historical corpus, read-only
+├── active-engagement
+├── engagements/<id>/
+│   ├── scope.yaml
+│   ├── state/               # authoritative SQLite ledger + local KB
+│   ├── scratch/             # site-local evidence/tools
+│   ├── findings/            # site-local report
+│   ├── board/               # site-local export
+│   ├── memory/              # site-local curated knowledge
+│   └── cache/
+├── swarm.py / postflight.py / kb.py / workspace.py
+└── research/board/          # shared read-only operational research
 ```
+
+선택·병렬 실행·legacy 규칙은 `WORKSPACES.md`.
 
 ## Initialize
 
 ```bash
+python3 .pi/pentest/workspace.py create --id SITE-A --scope scopes/site-a.yaml
+python3 .pi/pentest/workspace.py use --id SITE-A
 python3 .pi/pentest/swarm.py init
 python3 .pi/pentest/kb.py index
 ```
+
+여러 site를 동시에 실행하면 global pointer를 바꾸지 말고 site별 Pi process를
+`PENTEST_ENGAGEMENT=SITE-A pi`처럼 시작한다. Peer는 `engagement_env.sh`를 source해
+site-local scratch/report 경로를 사용한다. Selection이 없으면 기존 single-site layout을 그대로 쓴다.
 
 `init` is idempotent for the same scope hash and starts `cohort-1` with a target of eight
 concurrent equal-authority slots. Luna fresh replacements may create more than eight joined actor
@@ -236,7 +245,7 @@ python3 "$S" attempt-add --agent "$AGENT" --surface 'GET /order/details' \
 python3 "$S" finding-add --agent "$AGENT" --work "$WORK" \
   --title 'Order detail authorization boundary' --severity High \
   --type access-control --endpoint 'GET /order/details?orderId=' \
-  --evidence .pi/pentest/scratch/order-response.txt \
+  --evidence "$PENTEST_SCRATCH/order-response.txt" \
   --details '{"repro":"...","impact":"...","follow_ups":[
     {"key":"other-role","title":"Replay primitive with another role","priority":90},
     {"key":"bulk-endpoint","title":"Test the same primitive on the bulk API"}
@@ -246,7 +255,7 @@ python3 "$S" finding-add --agent "$AGENT" --work "$WORK" \
 # verdict atomically activates the planned follow-up work.
 python3 "$S" finding-attest --agent "$OTHER_AGENT" --work "$VERIFY_WORK" \
   --finding FIND-0001 --verdict reproduced \
-  --evidence .pi/pentest/scratch/order-replay.txt --notes 'fresh-session replay'
+  --evidence "$PENTEST_SCRATCH/order-replay.txt" --notes 'fresh-session replay'
 ```
 
 ## Why no bounty points
@@ -299,8 +308,8 @@ python3 .pi/pentest/swarm.py report
 python3 .pi/pentest/swarm.py export
 ```
 
-`report`는 `.pi/pentest/findings/report.md`, `export`는
-`.pi/pentest/board/events.jsonl`을 atomic replace로 생성한다.
+`report`와 `export`는 선택된 workspace의 `$PENTEST_FINDINGS/report.md`,
+`$PENTEST_BOARD/events.jsonl`을 atomic replace로 생성한다.
 
 ## Prompting discipline
 

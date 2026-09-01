@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SWARM = ROOT / "pentest" / "swarm.py"
 POSTFLIGHT = ROOT / "pentest" / "postflight.py"
 KB = ROOT / "pentest" / "kb.py"
+WORKSPACE = ROOT / "pentest" / "workspace.py"
 
 
 class CliTest(unittest.TestCase):
@@ -68,6 +69,8 @@ class CliTest(unittest.TestCase):
         for profile in (claude, luna, sonnet):
             self.assertIn("--label '<assigned-label>'", profile)
             self.assertIn("--proxy-required", profile)
+            self.assertIn("engagement_env.sh", profile)
+            self.assertIn("PENTEST_SCRATCH", profile)
             self.assertIn("proxy-check", profile)
             self.assertIn("Python must use explicit", profile)
             self.assertNotIn("--label peer-N", profile)
@@ -144,6 +147,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(200, checked["status"])
         self.assertIn("CONNECT example.test:443", captured[0])
         self.assertIn(f"X-Redteam-Agent: {agent}", captured[0])
+        self.assertIn("X-Redteam-Engagement: TEST-001", captured[0])
         claimed = self.run_swarm(
             "next", "--agent", agent, "--wait", 0, "--quiet", 999,
         )
@@ -289,6 +293,10 @@ class CliTest(unittest.TestCase):
         research = (ROOT / "PROMPTING-RESEARCH.md").read_text()
         self.assertIn("workflows/cohort.js", skill)
         self.assertIn("PROXY.md", skill)
+        self.assertIn("WORKSPACES.md", skill)
+        workspace_doc = (ROOT / "WORKSPACES.md").read_text()
+        self.assertIn("PENTEST_ENGAGEMENT", workspace_doc)
+        self.assertIn("engagements/SITE-A", workspace_doc)
         proxy_doc = (ROOT / "PROXY.md").read_text()
         proxy_env = (ROOT / "pentest" / "proxy_env.sh").read_text()
         self.assertIn("Python requests", proxy_doc)
@@ -320,6 +328,66 @@ class CliTest(unittest.TestCase):
         self.assertEqual(120, len(set(seqs)))
         conn = sqlite3.connect(self.db())
         self.assertEqual(120, conn.execute("SELECT COUNT(*) FROM events WHERE kind='intel'").fetchone()[0])
+
+    def test_multi_site_workspaces_isolate_scope_state_evidence_and_reports(self):
+        runtime = self.home / "runtime"
+        runtime.mkdir()
+        base_env = {**os.environ, "PENTEST_RUNTIME_ROOT": str(runtime)}
+        base_env.pop("PENTEST_HOME", None)
+        homes = {}
+        for engagement in ("SITE-A", "SITE-B"):
+            scope_path = self.home / f"{engagement}.yaml"
+            scope_path.write_text(
+                f'engagement_id: {engagement}\nauthorization: "unit test"\n'
+                f'targets:\n  - host: {engagement.lower()}.example.test\n'
+            )
+            created = subprocess.run(
+                ["python3", str(WORKSPACE), "create", "--id", engagement,
+                 "--scope", str(scope_path)], env=base_env, text=True, capture_output=True,
+            )
+            self.assertEqual(0, created.returncode, created.stderr)
+            home = runtime / "engagements" / engagement
+            homes[engagement] = home
+            env = {**base_env, "PENTEST_ENGAGEMENT": engagement}
+            initialized = subprocess.run(
+                ["python3", str(SWARM), "init"], env=env, text=True, capture_output=True,
+            )
+            self.assertEqual(0, initialized.returncode, initialized.stderr)
+            indexed = subprocess.run(
+                ["python3", str(KB), "index"], env=env, text=True, capture_output=True,
+            )
+            self.assertEqual(0, indexed.returncode, indexed.stderr)
+            reported = subprocess.run(
+                ["python3", str(SWARM), "report"], env=env, text=True, capture_output=True,
+            )
+            self.assertEqual(0, reported.returncode, reported.stderr)
+            (home / "scratch" / "same-name.txt").write_text(engagement)
+
+        self.assertNotEqual(
+            next((homes["SITE-A"] / "state").glob("SITE-A.sqlite3")),
+            next((homes["SITE-B"] / "state").glob("SITE-B.sqlite3")),
+        )
+        self.assertEqual("SITE-A", (homes["SITE-A"] / "scratch" / "same-name.txt").read_text())
+        self.assertEqual("SITE-B", (homes["SITE-B"] / "scratch" / "same-name.txt").read_text())
+        self.assertTrue((homes["SITE-A"] / "findings" / "report.md").is_file())
+        self.assertTrue((homes["SITE-B"] / "findings" / "report.md").is_file())
+        self.assertTrue((homes["SITE-A"] / "state" / "knowledge.sqlite3").is_file())
+        self.assertTrue((homes["SITE-B"] / "state" / "knowledge.sqlite3").is_file())
+
+        selected = subprocess.run(
+            ["python3", str(WORKSPACE), "use", "--id", "SITE-A"],
+            env=base_env, text=True, capture_output=True,
+        )
+        self.assertEqual(0, selected.returncode, selected.stderr)
+        current = json.loads(subprocess.check_output(
+            ["python3", str(WORKSPACE), "current"], env=base_env, text=True,
+        ))
+        self.assertEqual("SITE-A", current["engagement"])
+        overridden = json.loads(subprocess.check_output(
+            ["python3", str(WORKSPACE), "current"],
+            env={**base_env, "PENTEST_ENGAGEMENT": "SITE-B"}, text=True,
+        ))
+        self.assertEqual("SITE-B", overridden["engagement"])
 
     def test_status_reports_active_cohort_for_workflow_selector(self):
         status = self.run_swarm("status")

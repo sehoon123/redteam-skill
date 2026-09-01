@@ -9,6 +9,9 @@ pentest/cache/*
 !pentest/cache/.gitkeep
 pentest/findings/*
 !pentest/findings/.gitkeep
+pentest/active-engagement
+pentest/engagements/*
+!pentest/engagements/.gitkeep
 
 # Operator scope template stays tracked
 !pentest/scope.yaml

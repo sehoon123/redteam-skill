@@ -45,7 +45,7 @@ Layer 3: Output scanner
 
 ```
 각 Luna 인스턴스: 2~5턴, ledger lease 최대 1개
-결과 전달: 등록된 `.pi/pentest/scratch/` artifact path + SHA-256
+결과 전달: 선택된 workspace의 `$PENTEST_SCRATCH` artifact path + SHA-256
 다음 인스턴스: `context: "fresh"` + ledger/artifact로 이전 결과 수신
 ```
 
@@ -202,7 +202,13 @@ Opus가 fresh context로 수행. Opus는 Sonnet이 수집한 파일만 읽으므
 | Luna | **필수**: step chain (2-5턴/인스턴스) | trajectory score 누적 방지 |
 | Claude | **선택**: long session 가능 (79턴 실증) | density 관리하면 장기 생존 |
 
-### 4.2 Mandatory proxy
+### 4.2 Engagement workspace
+
+여러 site를 한 project에서 운영할 때 scope/DB/evidence/report를 섞지 않는다. Peer는 매 shell에서
+`. .pi/pentest/engagement_env.sh`를 source하고 `$PENTEST_SCRATCH`만 사용한다. 순차 실행은
+`workspace.py use`, 동시 실행은 site별 Pi process의 `PENTEST_ENGAGEMENT`로 선택한다.
+
+### 4.3 Mandatory proxy
 
 Target traffic은 `${PENTEST_PROXY:-http://127.0.0.1:8080}`을 반드시 사용한다. Peer는
 `join --proxy-required` 후 `. .pi/pentest/proxy_env.sh`와 ledger `proxy-check`를 실행한다.
@@ -210,7 +216,7 @@ Curl뿐 아니라 Python `requests/urllib/httpx/aiohttp`, Playwright, Selenium/C
 proxy 설정이 필요하다. 환경변수를 무시하는 library는 `proxy=` 또는 `trust_env=True`를 쓴다.
 Direct fallback은 금지하며 전체 표는 `PROXY.md`에 있다.
 
-### 4.3 Dossier startup 최소화
+### 4.4 Dossier startup 최소화
 
 ```bash
 # 모든 모델 공통
@@ -218,17 +224,19 @@ python3 "$S" dossier --recent 8 --gap-limit 5 --compact
 python3 "$S" inbox --agent "$AGENT" --after "$CURSOR" --collaboration-only --limit 25
 ```
 
-### 4.4 결과는 파일로
+### 4.5 결과는 파일로
 
 ```bash
 # 모든 모델 공통
-OUT=".pi/pentest/scratch/$AGENT-$WORK.txt"
+. .pi/pentest/engagement_env.sh
+OUT="$PENTEST_SCRATCH/$AGENT-$WORK.txt"
 . .pi/pentest/proxy_env.sh
-curl --proxy "$PENTEST_PROXY" --proxy-header "X-Redteam-Agent: $AGENT" ... > "$OUT" 2>/dev/null
+curl --proxy "$PENTEST_PROXY" --proxy-header "X-Redteam-Agent: $AGENT" \
+  --proxy-header "X-Redteam-Engagement: $PENTEST_ENGAGEMENT_ID" ... > "$OUT" 2>/dev/null
 python3 "$S" artifact-add --agent "$AGENT" --path "$OUT" --work "$WORK"
 ```
 
-### 4.5 Checkpoint every assertion
+### 4.6 Checkpoint every assertion
 
 ```bash
 # 각 네트워크 요청 후 즉시
@@ -237,7 +245,7 @@ python3 "$S" attempt-add --agent "$AGENT" --surface "$SURF" --check "$CHK" --res
 
 Checkpoint가 refusal/timeout으로 인한 데이터 손실을 최소화한다.
 
-### 4.6 Rolling recovery + final postflight
+### 4.7 Rolling recovery + final postflight
 
 Terminal child는 workflow 안에서 즉시 분류·기록되고 logical slot이 보충된다. Workflow 종료
 후 parent는 idempotent backstop을 실행한다:
