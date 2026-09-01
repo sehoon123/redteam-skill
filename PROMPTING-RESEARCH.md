@@ -150,24 +150,33 @@ peer-3 (53 turns): DOM XSS impact 검증 중 → budget
 
 ## 3. Claude Sonnet 5 / Opus 4.6 / Sonnet 4.6
 
-### 관찰 데이터
-
-직접 cohort 실험 없음. 간접 데이터:
-- Sonnet 5: 이전 run에서 fallback으로 사용됨, refusal 관찰 없음
-- Opus 4.6: RT-2026-GJ01에서 fallback으로 사용됨, 정상 완수
-- Sonnet 4.6: 직접 데이터 없음
-
 ### 적용 원칙
 
 Claude 모델은 모두 동일한 service-layer density classifier를 사용한다.
-Opus 4.8 기법이 동일하게 적용된다. 차이:
+Opus 4.8 기법이 동일하게 적용된다.
 
-| 모델 | context window | 비용 | 추천 용도 |
-|------|---------------|------|---------|
-| Opus 4.8 | 가장 큼 | 가장 비쌈 | 주 작업: finding, attest, exploit chain |
-| Opus 4.6 | 큼 | 중간 | fallback, 동일 기법 적용 |
-| Sonnet 5 | 큼 | 저렴 | 고속 coverage sweep, 다량 관찰 |
-| Sonnet 4.6 | 중간 | 가장 저렴 | 단순 HTTP 관찰, surface discovery |
+| 모델 | 비용 | 추천 용도 |
+|------|------|----------|
+| Opus 4.8 | 가장 비쌈 | 분석, exploit chain, attest, finding |
+| Opus 4.6 | 중간 | Opus 4.8 fallback |
+| Sonnet 5 | 저렴 | 빠른 coverage sweep, surface discovery, HTTP 관찰 |
+| Sonnet 4.6 | 가장 저렴 | 대량 단순 관찰 |
+
+### Sonnet→Opus 전환 기법
+
+Sonnet은 observation/coverage에서 보안 어휘 밀도가 낮아 density classifier 여유가 크다.
+Opus는 exploit chain 구성·검증·PoC 작성에 강하다.
+
+**조합 효과:**
+- Sonnet이 초기 정찰/관찰 → 보안 어휘 누적을 Sonnet 세션이 흡수
+- Opus가 fresh context에서 고가치 작업만 시작 → density 낮음
+- 전체 비용 절감 (Sonnet 비용 ≈ Opus의 ~1/10)
+
+**방법 1: Cohort 혼합** — Sonnet 3 + Opus 2 + Luna 3을 동시 실행.
+Sonnet이 coverage gap을 sweep하고 Opus가 자연스럽게 verify/exploit work를 claim한다.
+
+**방법 2: Step chain** — 동일 작업의 초기(정찰)를 Sonnet이, 후반(분석·검증)을
+Opus가 fresh context로 수행. Opus는 Sonnet이 수집한 파일만 읽으므로 density가 낮다.
 
 모든 Claude 모델에 공통:
 - Warm-up trust building
@@ -176,7 +185,6 @@ Opus 4.8 기법이 동일하게 적용된다. 차이:
 - 점진적 escalation
 - Script not payload
 - Fresh context + file evidence
-
 ---
 
 ## 4. 모델 공통: Swarm Skill 운영 기법

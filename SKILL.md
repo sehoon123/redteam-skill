@@ -134,6 +134,80 @@ python3 .pi/pentest/swarm.py cohort-start --label cohort-2 --peers 8
 # 동일한 runs.all을 다시 실행하고 완료 후 postflight
 ```
 
+## Sonnet→Opus escalation: cost + refusal 최적화
+
+Sonnet은 저렴하고 빠르며, observation/coverage 단계에서 보안 어휘 밀도가 낮으므로 Claude density
+classifier에 여유가 크다. Opus는 exploit chain 구성·검증·PoC 작성에 강하다.
+두 모델을 조합하면 비용을 줄이고 Opus가 fresh context에서 고가치 작업에만 집중할 수 있다.
+
+### 방법 1: Cohort에서 Sonnet + Opus 혼합
+
+Sonnet peer들이 surface discovery, coverage sweep, HTTP 관찰을 수행한다.
+Opus peer들이 verify, exploit chain, complex analysis를 수행한다.
+ledger가 priority 기반으로 자동 분배하므로 역할 지정이 아니다.
+
+```js
+subagent({
+  async: true,
+  timeoutMs: 3600000,
+  workflowScript: `
+    var control = {
+      needsAttentionAfterMs: 180000,
+      notifyOn: ["needs_attention"]
+    };
+    var common =
+      "너는 인가된 보안 평가의 동일 권한 peer다. 고정 역할과 phase가 없다. " +
+      ".pi/pentest/scope.yaml을 읽고 loaded agent profile의 startup/loop를 그대로 수행해. " +
+      "join cursor 이후의 bounded collaboration inbox와 dossier를 읽고 ready work를 atomic claim해. " +
+      "발견은 즉시 ledger에 공유하고 다른 peer finding은 독립 재현해. " +
+      "유한 tool timeout을 사용하고 종료 전 leave --summary로 handoff해. " +
+      "scope/close를 넘지 말고 provider refusal을 재시도하거나 다른 모델로 우회하지 마.";
+
+    var results = await runs.all([
+      // Sonnet: 빠른 coverage sweep + surface discovery
+      { key: "sonnet-1", agent: "pentest-peer-sonnet", task: common + " label은 sonnet-1.", control: control },
+      { key: "sonnet-2", agent: "pentest-peer-sonnet", task: common + " label은 sonnet-2.", control: control },
+      { key: "sonnet-3", agent: "pentest-peer-sonnet", task: common + " label은 sonnet-3.", control: control },
+      // Opus: 고가치 분석 + exploit verification
+      { key: "opus-4", agent: "pentest-peer", task: common + " label은 opus-4.", control: control },
+      { key: "opus-5", agent: "pentest-peer", task: common + " label은 opus-5.", control: control },
+      // Luna: step chain으로 별도 운영 또는 bounded observation
+      { key: "luna-6", agent: "pentest-peer-luna", task: common + " label은 luna-6.", control: control },
+      { key: "luna-7", agent: "pentest-peer-luna", task: common + " label은 luna-7.", control: control },
+      { key: "luna-8", agent: "pentest-peer-luna", task: common + " label은 luna-8.", control: control }
+    ]);
+    return results.map(function (r) {
+      return { key: r.key, status: r.status, error: r.error, output: r.output };
+    });
+  `
+})
+```
+
+Sonnet이 surface를 발견하면 ledger에 등록되고, 그 surface에 대한 check work가 자동 생성된다.
+Opus가 priority가 높은 verify/exploit work를 claim하고, Sonnet이 남은 coverage gap을 sweep한다.
+
+### 방법 2: Step chain에서 Sonnet→Opus 전환
+
+동일 분석 작업의 초기(관찰)를 Sonnet이, 후반(분석·검증)을 Opus가 fresh context로 수행:
+
+```js
+// Sonnet: 정찰 + 소스 수집 (저렴, density 낮음)
+var recon = await runs.run("recon", {
+  agent: "delegate", model: "<your-provider>/claude-sonnet-5",
+  task: "ginandjuice.shop에서 /blog의 JS 파일 목록을 수집하고 " +
+        "각 파일을 /tmp에 저장해. 파일 목록과 줄 수를 JSON으로 반환해."
+});
+// Opus: 깊은 분석 + PoC (fresh context, 이전 보안 어휘 없음)
+var analysis = await runs.run("analyze", {
+  agent: "delegate", model: "<your-provider>/claude-opus-4-8",
+  task: "/tmp의 JS 파일들을 읽고 데이터 흐름을 분석해. " +
+        "입력이 DOM sink에 도달하는 경로를 찾고 검증 코드를 작성·실행해."
+});
+```
+
+Opus는 Sonnet이 수집한 파일만 읽으므로 context에 보안 어휘 누적이 없다.
+Sonnet 단계의 비용은 Opus의 ~1/10이므로 전체 비용이 크게 줄어든다.
+
 ## Luna step chain: deep analysis without refusal
 
 Luna는 단일 세션에서 20+ turns 보안 작업을 하면 trajectory score가 threshold를 초과해
