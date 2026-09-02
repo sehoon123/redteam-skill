@@ -1,4 +1,5 @@
 import concurrent.futures
+import hashlib
 import json
 import os
 import socket
@@ -2058,6 +2059,12 @@ class CliTest(unittest.TestCase):
             "--claim", "Benchmark observation", "--subjects", '["surface:GET /bench"]',
             "--evidence", json.dumps([f"sha256:{artifact['sha256']}"]),
         )
+        self.run_swarm(
+            "finding-add", "--agent", worker, "--work", claim["id"],
+            "--title", "Benchmark access control", "--severity", "Low",
+            "--type", "access-control", "--endpoint", "GET /bench",
+            "--evidence", evidence,
+        )
         self.run_swarm("done", "--agent", worker, "--work", claim["id"])
         self.run_swarm(
             "run-result", "--label", "bench-worker", "--run-id", "bench-run",
@@ -2068,6 +2075,11 @@ class CliTest(unittest.TestCase):
         replay = self.home / "board" / "bench-replay.json"
         self.run_swarm("replay-export", "--strict", "--output", replay)
 
+        truth = self.home / "board" / "ground-truth.json"
+        truth.write_text(json.dumps({
+            "verified_finding_keys": ["access-control|get /bench"],
+            "rejected_finding_keys": [],
+        }))
         reports = []
         for condition, replay_count in (("solo", 1), ("isolated-parallel", 2), ("shared-swarm", 1)):
             manifest = self.home / "board" / f"{condition}.manifest.json"
@@ -2079,6 +2091,7 @@ class CliTest(unittest.TestCase):
                 "http_request_budget": 100, "starting_credentials": [],
                 "target_reset_state": "fixture-reset", "model_profiles": ["test/model"],
                 "replays": [replay.name] * replay_count,
+                "operator_ground_truth": truth.name,
             }))
             first = self.home / "board" / f"{condition}.report.json"
             second = self.home / "board" / f"{condition}.report-copy.json"
@@ -2089,6 +2102,13 @@ class CliTest(unittest.TestCase):
         shared = json.loads(reports[-1].read_text())
         self.assertEqual(1, shared["outcomes"]["new_surfaces"])
         self.assertEqual(1, shared["outcomes"]["tested_applicable_checks"])
+        self.assertEqual(
+            hashlib.sha256(truth.read_bytes()).hexdigest(),
+            shared["controls"]["operator_ground_truth_sha256"],
+        )
+        self.assertEqual(1, shared["outcomes"]["operator_verified_findings"])
+        self.assertEqual(0, shared["outcomes"]["unique_reproduced_findings"])
+        self.assertIsNone(shared["outcomes"]["time_to_first_reproduced_finding_seconds"])
         self.assertEqual(100, shared["cost"]["input_tokens"])
         self.assertEqual(10, shared["cost"]["wall_clock_seconds"])
         self.assertGreater(shared["collaboration"]["typed_event_adoption_ratio"], 0)
@@ -2102,6 +2122,33 @@ class CliTest(unittest.TestCase):
         self.assertEqual(1, compared["repetitions"]["shared-swarm"])
         self.assertIn("parallelism_gain", compared["deltas"])
         self.assertIn("collaboration_gain", compared["deltas"])
+        self.assertEqual(compared["deltas"], compared["paired_deltas"])
+
+    def test_swarmbench_paired_deltas_use_matching_repetitions(self):
+        reports = []
+        for condition, values in (
+            ("isolated-parallel", [3, 3, 0]),
+            ("shared-swarm", [2, 3, 0]),
+        ):
+            for repetition, value in enumerate(values, 1):
+                path = self.home / "board" / f"{condition}-{repetition}.json"
+                path.write_text(json.dumps({
+                    "schema_version": 1, "condition": condition,
+                    "repetition": repetition, "target_snapshot": "paired-fixture",
+                    "controls": {"reset": "same"}, "budgets": {"seconds": 600},
+                    "outcomes": {"operator_verified_findings": value},
+                }))
+                reports.append(path)
+        output = self.home / "board" / "paired-comparison.json"
+        command = ["compare"]
+        for report in reports:
+            command.extend(("--report", report))
+        command.extend(("--output", output))
+        self.run_cli(BENCHMARK, *command)
+        compared = json.loads(output.read_text())
+        key = "outcomes.operator_verified_findings"
+        self.assertEqual(-1, compared["deltas"]["collaboration_gain"][key])
+        self.assertEqual(0, compared["paired_deltas"]["collaboration_gain"][key])
 
     def test_korean_and_structured_knowledge_search(self):
         (self.home / "research" / "board" / "recon-baseline.jsonl").write_text(

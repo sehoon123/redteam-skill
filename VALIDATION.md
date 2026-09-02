@@ -246,7 +246,7 @@ generation recovery but not collective effectiveness.
 This isolated the root defect: target HTTP happened before separate model-owned artifact/attempt/event
 bookkeeping. v3.7 moves only that boundary into host code and keeps semantic reasoning distributed.
 
-The deterministic suite now contains 67 tests, including ten loopback-only HTTP tests:
+The deterministic suite now contains 68 tests, including ten loopback-only HTTP tests:
 
 - one `peer-start` returns network mode, grounded claim, and task-local brief;
 - `exec-http` sees a live/non-stalled claim before send, injects four provenance headers, disables redirects,
@@ -276,5 +276,47 @@ and passed all 15 scenarios without duplicate uncertain I/O. Copied GJ02 and GJ0
 strict-replayed with zero validation/FK errors (553 events/57 work and 46 events/3 work/4 claims).
 
 Remote exactly-once across host process death remains impossible; prepared/sending uncertainty is
-surfaced rather than retried. The next live step is the two-peer shared validation gate, not the
-Solo/isolated/shared superiority benchmark.
+surfaced rather than retried.
+
+## Live Gate 3 and controlled SwarmBench — 2026-09-02
+
+Three fresh `ginandjuice.shop` shared validations passed the live gate. Across 96 claims, 92 completed
+(95.8%), 95 assertions became durable, 93 checkpointed, seven peer-created work items were consumed by
+another peer, no claim expired, and all three strict replays had zero errors. R1 exposed a clean-exit
+problem: productive continuous peers hit the 600-second child deadline. The canonical prompt now stops
+new claims at eight completions or seven minutes; R2 and R3 then exited cleanly.
+
+Only after that gate passed, a stateless loopback fixture (`swarmbench-loopback-v1`) ran three matched
+repetitions each of Solo, three isolated ledgers, and one three-peer shared ledger. Every request used
+`exec-http`; 111/111 fixture requests carried agent, claim, experiment, and engagement provenance.
+All 15 referenced replays and SQLite foreign keys validated cleanly. The model, hard 600-second budget,
+soft eight-claim/seven-minute stop, ground truth, fixture image, and HTTP budget were identical.
+
+The first aggregation incorrectly required in-ledger attestation before counting an operator-ground-truth
+match, which structurally forced Solo/isolated operator verification to zero. That bias was fixed before
+final aggregation: operator-verified discovery and finder-excluded in-ledger reproduction are now separate.
+
+| Median across three repetitions | Solo | Isolated parallel | Shared swarm |
+|---|---:|---:|---:|
+| operator-ground-truth findings observed | 2 | **3** | 2 |
+| finder-excluded in-ledger reproduced findings | 0 | 0 | **1** |
+| applicable checks | 8 | 12 | **14** |
+| tool calls | 47 | 147 | **118** |
+| wall-clock seconds | 469.0 | 498.2 | 600.2 |
+| stalled claim rate | 0% | 0% | 12.5% |
+
+The bounded result is mixed, not a universal superiority claim. Shared state improved end-to-end independent
+reproduction, applicable-check coverage, duplicate-request avoidance, and total tool use relative to isolated
+parallel. It did not improve discovery: paired shared-minus-isolated ground-truth differences were `[-1,0,0]`
+(median zero), although subtracting marginal medians yields 2−3. Other paired median deltas were reproduction
+`+1`, applicable checks `+1`, tool calls `−3`, wall time `+102.0s`, and stalled claims `+7.65pp`.
+
+A Herdr-hosted independent audit exactly regenerated all nine reports and the final comparison from the 15
+hash-matching replays, and matched all 111 lab-log rows one-to-one with experiments. It also identified the
+remaining confounders: fixed Solo→isolated→shared order; 10/21 provider runs timed out (1/3, 3/9, and 6/9);
+R3 timed out in every condition; input/output token, network-request, and cost telemetry stayed `null`;
+`cross_agent_causal_edges` remained zero; the fixture exposed candidate endpoints and normalization headers;
+and ground truth contained no rejected keys, so false-positive precision was not tested. The final ground-truth
+SHA-256 is `013beed172e900f8f43dc599c058935e63a9d23df73a5efd04d563179249d636`, but manifests referenced its mutable
+path during execution. With only three repetitions, no significance claim is made. Canonical artifacts live
+under `.pi/pentest/benchmarks/swarmbench-loopback-v1/`.

@@ -46,7 +46,11 @@ durable/completed assertion, stage latency, duplicate HTTP, and usage metrics. M
 tool, request, or cost values.
 
 Operator ground truth is a JSON object with `verified_finding_keys` and `rejected_finding_keys`.
-False-positive and operator-verified counts remain zero unless those explicit keys are supplied.
+`operator_verified_findings` counts every observed dedup key present in that ground truth, regardless of
+whether the condition could perform in-ledger attestation; `unique_reproduced_findings` separately measures
+finder-excluded ledger reproduction. The aggregate report hashes the ground-truth file into its controls so
+later mutation cannot silently compare unequal inputs. False-positive and operator-verified counts remain zero
+without explicit keys.
 
 ## Interpretation
 
@@ -54,6 +58,9 @@ False-positive and operator-verified counts remain zero unless those explicit ke
 solo → isolated-parallel = parallelism gain
 isolated-parallel → shared-swarm = collaboration gain
 ```
+
+`compare` reports both differences of condition medians and median paired deltas for matching repetition
+numbers. Prefer paired deltas when run order or provider conditions can affect every condition in one repetition.
 
 A replay policy result is ranking-only. It says which work a policy would rank first from the exact
 historical candidate set; it does **not** claim that the counterfactual work would have produced a
