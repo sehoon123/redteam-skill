@@ -246,7 +246,7 @@ generation recovery but not collective effectiveness.
 This isolated the root defect: target HTTP happened before separate model-owned artifact/attempt/event
 bookkeeping. v3.7 moves only that boundary into host code and keeps semantic reasoning distributed.
 
-The deterministic suite now contains 68 tests, including ten loopback-only HTTP tests:
+The deterministic suite now contains 69 tests, including ten loopback-only HTTP tests:
 
 - one `peer-start` returns network mode, grounded claim, and task-local brief;
 - `exec-http` sees a live/non-stalled claim before send, injects four provenance headers, disables redirects,
@@ -267,6 +267,9 @@ The deterministic suite now contains 68 tests, including ten loopback-only HTTP 
   expired/stalled claims;
 - populated historical SQLite migration preserves experiment/event child foreign keys; strict replay
   recomputes request identity and rejects artifact/checkpoint provenance corruption;
+- current-schema read commands complete while another connection holds the WAL writer slot; schema work
+  is version-gated behind explicit `init`, inbox/claim-following brief reads do not acquire it, and artifact
+  hashing completes before mutation transactions begin;
 - replay specs redact query/header secrets and replay/request artifacts are mode 0600.
 
 Tests use only `ThreadingHTTPServer` on an ephemeral loopback port. No live target traffic is part of

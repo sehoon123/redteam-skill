@@ -19,6 +19,16 @@ Selected workspace의 SQLite만 live authority다. JSONL/report/replay는 snapsh
 Scope/DB/scratch/findings/board/memory/cache는 engagement-local이다. Selection pointer는 live peer/lease가
 있을 때 바꾸지 않는다.
 
+### SQLite concurrency boundary
+
+WAL은 reader와 writer를 병행하지만 writer끼리는 병행하지 않는다. 따라서 mutation은 짧은
+`BEGIN IMMEDIATE` transaction으로 직렬화하고, `status`/`inbox`/claim 뒤의 brief read는 deferred
+snapshot으로 처리한다. Current-schema `connect()`는 DB를 변경하지 않는다. DDL, index 생성,
+legacy backfill은 `PRAGMA user_version`이 뒤처진 경우에만 실행하며 routine command는 자동 upgrade
+대신 중단한다. Peer를 모두 멈춘 뒤 `python3 .pi/pentest/swarm.py init`을 한 번 실행해 upgrade한다.
+Active traffic 중 manual WAL checkpoint는 실행하지 않는다. Artifact file hashing은 mutation
+transaction 전에 끝내 local file I/O가 writer slot을 점유하지 못하게 한다.
+
 ## Work and timing
 
 ```text

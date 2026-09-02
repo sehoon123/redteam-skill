@@ -1249,6 +1249,20 @@ class CliTest(unittest.TestCase):
             self.assertNotIn('agent: "pentest-peer-luna"', document)
         self.assertIn("연구 문서이며 launch source가 아니다", research)
 
+    def test_read_commands_do_not_wait_for_wal_writer(self):
+        agent = self.join("reader")
+        writer = sqlite3.connect(self.db(), isolation_level=None)
+        self.assertEqual(37, writer.execute("PRAGMA user_version").fetchone()[0])
+        writer.execute("BEGIN IMMEDIATE")
+        try:
+            started = time.monotonic()
+            inbox = self.run_swarm("inbox", "--agent", agent)
+            self.assertLess(time.monotonic() - started, 2)
+            self.assertTrue(inbox)
+        finally:
+            writer.rollback()
+            writer.close()
+
     def test_concurrent_event_writers(self):
         agents = [self.join(f"peer-{i}") for i in range(8)]
 
@@ -1964,6 +1978,7 @@ class CliTest(unittest.TestCase):
         conn.execute("ALTER TABLE attestations DROP COLUMN work_id")
         conn.execute("ALTER TABLE attestations DROP COLUMN claim_id")
         conn.executescript("""
+            PRAGMA user_version=0;
             ALTER TABLE work_artifacts RENAME TO work_artifacts_v351;
             CREATE TABLE work_artifacts (
                 work_id INTEGER NOT NULL REFERENCES work(id),
@@ -1979,6 +1994,9 @@ class CliTest(unittest.TestCase):
         """)
         conn.commit()
         conn.close()
+        gated = self.run_swarm("dossier", check=False)
+        self.assertIn("ledger schema upgrade required", gated.stderr)
+        self.run_swarm("init")
         dossier = self.run_swarm("dossier")
         migrated = sqlite3.connect(self.db())
         agent_columns = {row[1] for row in migrated.execute("PRAGMA table_info(agents)")}
@@ -2562,6 +2580,7 @@ class HttpExecutionTest(unittest.TestCase):
         conn.execute("PRAGMA foreign_keys=OFF")
         conn.execute("PRAGMA legacy_alter_table=ON")
         conn.executescript("""
+            PRAGMA user_version=36;
             BEGIN IMMEDIATE;
             ALTER TABLE work_claims RENAME TO work_claims_v37;
             CREATE TABLE work_claims (
@@ -2589,6 +2608,9 @@ class HttpExecutionTest(unittest.TestCase):
         """)
         conn.close()
 
+        gated = self.run_swarm("dossier", check=False)
+        self.assertIn("ledger schema upgrade required", gated.stderr)
+        self.run_swarm("init")
         self.run_swarm("dossier")
         migrated = sqlite3.connect(self.server.db_path)
         sql = migrated.execute(
