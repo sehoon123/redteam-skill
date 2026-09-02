@@ -1,7 +1,7 @@
 # Redteam Skill
 
-Pi용 phase-free authorized penetration-testing skill. v3.7은 여러 agent를 먼저 늘리는 대신
-**Reliable Atomic Execution Plane**을 추가한다. Host-owned `exec-http`가 target request와 durable
+Pi/Herdr용 phase-free authorized penetration-testing skill. 여러 agent를 먼저 늘리는 대신
+**Reliable Atomic Execution Plane**을 유지하고, fresh Pi peer lifecycle은 Herdr가 관리한다. Host-owned `exec-http`가 target request와 durable
 artifact/attempt를 묶고, `checkpoint`가 semantic assertion·follow-up·completion을 한 transaction으로
 처리한다.
 
@@ -14,7 +14,8 @@ artifact/attempt를 묶고, `checkpoint`가 semantic assertion·follow-up·compl
 - **Grounded bootstrap** — empty engagement는 reachability/root-fetch부터 시작; 근거 없는 hypothesis 거부
 - **Partial takeover** — response를 재전송하지 않고 이전 experiment를 다음 generation이 checkpoint
 - **Progress-aware lease** — bookkeeping renewal 제거, `expired`와 `stalled` 분리
-- **Elastic cohort** — provider concurrency 1에서 시작해 evidence/backlog에 따라 최대 3 peer
+- **Herdr elastic cohort** — fresh Pi process 1개에서 시작해 evidence/backlog에 따라 최대 3 peer
+- **Intercom control plane** — bounded lifecycle/reference message만 전달; assessment authority는 SQLite
 - **Provider-wide 429 circuit** — same-provider launch storm 방지, fallback/reroute 없음
 - **Independent findings** — SHA-256 evidence와 finder가 아닌 peer의 attestation
 - **Task-local causal handoff** — unrelated transcript 대신 workstream provenance만 전달
@@ -31,11 +32,9 @@ artifact/attempt를 묶고, `checkpoint`가 semantic assertion·follow-up·compl
 ├── SKILL.md / SWARM.md / CAUSAL-PROTOCOL.md / SWARMBENCH.md
 ├── PROXY.md / WORKSPACES.md / VALIDATION.md
 ├── agents/
-│   ├── pentest-peer.md / pentest-peer-sonnet.md / pentest-peer-luna.md
-│   ├── pentest-cohort-selector.md
-│   └── pentest-run-recorder.md
-├── workflows/cohort.js          # 1→2→max 3 provider-aware ramp
+│   └── pentest-peer.md / pentest-peer-sonnet.md / pentest-peer-luna.md
 ├── pentest/
+│   ├── herdr_cohort.py          # Herdr lifecycle + event-driven replacement
 │   ├── swarm.py                 # ledger + peer-start + exec-http + checkpoint
 │   ├── replay.py / benchmark.py / scheduler.py / protocol.py
 │   ├── postflight.py / workspace.py / kb.py
@@ -45,18 +44,19 @@ artifact/attempt를 묶고, `checkpoint`가 semantic assertion·follow-up·compl
 
 ## 설치
 
+Herdr 0.8+와 pi-intercom을 먼저 설치한다.
+
 ```bash
-mkdir -p .pi/skills/redteam/workflows .pi/agents .pi/pentest
+mkdir -p .pi/skills/redteam .pi/agents .pi/pentest
 cp SKILL.md SWARM.md RESEARCH.md PROMPTING-RESEARCH.md PROXY.md WORKSPACES.md \
   CAUSAL-PROTOCOL.md SWARMBENCH.md VALIDATION.md .pi/skills/redteam/
-cp workflows/cohort.js .pi/skills/redteam/workflows/
 cp agents/pentest-peer.md agents/pentest-peer-sonnet.md agents/pentest-peer-luna.md \
-  agents/pentest-cohort-selector.md agents/pentest-run-recorder.md agents/luna-probe.md .pi/agents/
+  agents/luna-probe.md .pi/agents/
 cp -R pentest/. .pi/pentest/
 ```
 
-`settings.json`의 provider/model ID는 예시이므로 환경에 맞게 바꾼다. Cohort 1 Sonnet,
-cohort 2+ Opus routing은 cohort 단위이며 work 종류와 무관하다. `fallbackModels`는 비워 둔다.
+Cohort 1은 Sonnet 5, cohort 2+는 Opus 4.8이고 Luna는 explicit one-lease option이다. 각 Pi process는
+한 model만 scope하며 fallback/resume을 사용하지 않는다.
 
 ## 사용
 
@@ -77,19 +77,20 @@ python3 .pi/pentest/kb.py index
 사용자는 `create/use`를 직접 다루지 않는다. 여러 site는 site별 Pi process와
 `PENTEST_ENGAGEMENT=<id>`를 사용한다.
 
-Canonical workflow는 `workflows/cohort.js` 하나다. 첫 peer의 useful action과 provider health를
-확인한 뒤 두 번째를 시작하고, verify 또는 distinct grounded backlog가 있을 때 세 번째를 시작한다.
+Canonical launcher는 `pentest/herdr_cohort.py`다. Coordinator는 Herdr에서 peer pane과 watcher pane을
+만들고, pi-intercom stable name을 전달한다. 첫 peer만 시작한 뒤 기존 `ramp-status` gate가 ready일 때
+slot 2/3을 추가한다.
 
-```js
-subagent({
-  workflowScriptPath: ".pi/skills/redteam/workflows/cohort.js",
-  cwd: ".",
-  async: true,
-  timeoutMs: 3600000,
-  globalConcurrencyLimit: 3,
-  maxSubagentSpawnsPerRun: 9
-})
+```bash
+python3 .pi/pentest/herdr_cohort.py launch \
+  --pane '<peer-pane-1>' --slot 1 --coordinator '<coordinator-name>'
+herdr pane run '<watcher-pane>' \
+  'python3 .pi/pentest/herdr_cohort.py watch --interval 2'
 ```
+
+Watcher는 `pane.agent_detected`/`pane.exited` event를 구독한다. Exact Pi session이 실제로 사라졌을
+때 transcript를 분류하고, `run-result`와 `run-result-get` receipt 뒤에만 fresh generation을 시작한다.
+Refusal/429/budget, missing·ambiguous transcript, pane exit, Herdr/socket loss는 replacement 없이 fail closed한다.
 
 Agent의 정상 HTTP path:
 
@@ -108,10 +109,11 @@ python3 .pi/pentest/swarm.py checkpoint --agent "$AGENT" --work "$WORK" \
 결정을 적용한다. Reachable proxy rejection은 차단하고, auto mode의 connection unavailability만
 direct/offline으로 진행한다.
 
-Workflow 후:
+Cohort 후:
 
 ```bash
-python3 .pi/pentest/postflight.py <workflow-run-dir>/status.json --end-cohort
+python3 .pi/pentest/herdr_cohort.py disable --slot 1
+python3 .pi/pentest/swarm.py cohort-end --reason 'Herdr cohort complete'
 python3 .pi/pentest/swarm.py cohort-start --peers 3
 python3 .pi/pentest/swarm.py metrics
 python3 .pi/pentest/swarm.py replay-export --strict

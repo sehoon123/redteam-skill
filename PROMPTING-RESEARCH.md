@@ -4,8 +4,8 @@
 Safeguard를 우회하기 위한 지침이 아니다. Refusal은 재시도하거나 다른 모델로 자동 우회하지 않는다.
 
 > **연구 문서이며 launch source가 아니다.** 실행 시 이 문서의 예시를 복사하지 말고
-> `SKILL.md`의 canonical `workflowScriptPath`만 사용한다. 현재 workflow는 Luna 실험 fanout이
-> 아니라 provider-aware 1→2→최대 3 elastic Claude cohort와 atomic execution 계약을 강제한다.
+> `SKILL.md`의 canonical `pentest/herdr_cohort.py`만 사용한다. 현재 runtime은 Herdr-managed fresh
+> Pi generation, provider-aware 1→2→최대 3 cohort, atomic execution 계약을 강제한다.
 
 ---
 
@@ -51,14 +51,13 @@ Layer 3: Output scanner
 
 Operational implementation:
 
-- `workflows/cohort.js`
+- `pentest/herdr_cohort.py`
 - `agents/pentest-peer-luna.md`
 
-Canonical workflow는 rolling logical slot마다 Luna를 새로운 `agent` + `context: "fresh"`로
-실행하며 `resume: "previous"`를 사용하지 않는다. 안전한 기본 `join`/명시적 `--one-shot`은
-ledger row에 claim limit을 고정하고, Claude만 `--continuous`를 사용한다. Structured
-`blocked/refusal` verdict는 refused work를 `failed`로 격리한 뒤 같은 Luna profile의 fresh
-replacement를 시작한다. Replacement는 다른 ready work만 claim한다.
+Herdr supervisor는 Luna generation마다 `--continue`/`--resume` 없는 새 Pi process와 새 name을
+사용한다. `--one-shot`은 ledger row에 claim limit을 고정하고 Claude만 `--continuous`를 사용한다.
+Explicit refusal은 `failed`로 고정하고 해당 slot을 그 cohort에서 terminal로 닫는다. Provider-terminal
+응답이 없는 실제 process death만 `interrupted` receipt 뒤 fresh generation으로 보충한다.
 
 ### 검증된 사실
 
@@ -227,46 +226,24 @@ python3 "$S" next --agent "$AGENT" --brief --brief-tokens 2200 --after "$CURSOR"
 Fresh peer startup은 `global dossier → next`가 아니라 `minimal status → next → task-local brief`다.
 Brief는 causal ancestor/evidence ref와 동일 workstream만 포함한다.
 
-### 4.5 결과는 파일로
+### 4.5 결과는 host-owned artifact로
 
-```bash
-# 모든 모델 공통
-. .pi/pentest/engagement_env.sh
-OUT="$PENTEST_SCRATCH/$AGENT-$WORK.txt"
-. .pi/pentest/proxy_env.sh --agent "$AGENT"
-if [ "$PENTEST_NETWORK_MODE" = proxy ]; then
-  curl --proxy "$PENTEST_PROXY" --proxy-header "X-Redteam-Agent: $AGENT" \
-    --proxy-header "X-Redteam-Engagement: $PENTEST_ENGAGEMENT_ID" ... > "$OUT" 2>/dev/null
-else
-  curl --connect-timeout 10 --max-time 30 ... > "$OUT" 2>/dev/null
-fi
-python3 "$S" artifact-add --agent "$AGENT" --path "$OUT" --work "$WORK"
-```
+모든 target request는 `exec-http`만 사용한다. 이 command가 bounded request/response 파일을 scratch에
+쓰고 SHA-256 artifact와 partial attempt를 ledger에 저장한다. Peer는 direct curl, requests, browser,
+custom socket으로 target traffic을 만들지 않는다.
 
 ### 4.6 Checkpoint every assertion
 
-```bash
-# 각 네트워크 요청 후 즉시
-python3 "$S" attempt-add --agent "$AGENT" --work "$WORK" \
-  --surface "$SURF" --check "$CHK" --result partial
-python3 "$S" observe --agent "$AGENT" --work "$WORK" --workstream "$STREAM" \
-  --claim "$CLAIM" --subjects "$SUBJECT_REFS" --evidence "[\"sha256:$SHA\"]"
-```
+각 `exec-http`의 durable experiment를 즉시 `checkpoint`하여 해석, grounded next action, work 종료를
+한 transaction에 남긴다. Causally sourced work는 artifact, linked attempt, typed assertion 중 하나
+없이는 `done`되지 않는다.
 
-Checkpoint가 refusal/timeout으로 인한 데이터 손실을 최소화한다. Causally sourced work는
-artifact, linked attempt, typed assertion 중 하나 없이는 `done`되지 않는다.
+### 4.7 Herdr recovery
 
-### 4.7 Rolling recovery + final postflight
-
-Terminal child는 workflow 안에서 즉시 분류·기록되고 logical slot이 보충된다. Workflow 종료
-후 parent는 idempotent backstop을 실행한다:
-
-```bash
-python3 .pi/pentest/postflight.py <workflow-dir>/status.json --end-cohort
-```
-
-Refusal work는 `failed`로 유지하고, timeout/interrupted/provider-error lease만 takeover용
-`ready`로 반환한다.
+Herdr watcher는 event subscription 뒤 exact pane/session/generation을 다시 확인한다. Explicit
+refusal/429/budget은 terminal이며 보충하지 않는다. Provider-terminal evidence가 없는 실제 Pi exit만
+`run-result interrupted`와 `run-result-get` receipt 뒤 fresh generation으로 보충한다. Intercom은
+notification이며 work/evidence authority가 아니다.
 
 ---
 
@@ -292,9 +269,9 @@ response = client.chat.completions.create(
 ## 6. 실패 시 행동
 
 ```
-1. Agent가 응답할 수 있는 refusal → `task.blocked` + `leave --refusal`
-2. Provider가 응답 자체를 끊음 → rolling recorder host gate가 즉시 기록 + lease `failed`
-3. 같은 profile/model의 fresh replacement가 **다른** ready work를 claim
-4. Refused work를 재시도·paraphrase·resume하지 않음
-5. 다른 모델로 자동 우회하지 않고 `fallbackModels`는 비워 둠
+1. Agent가 응답할 수 있는 refusal → `task.blocked` + `leave --refusal` + intercom `TERMINAL`
+2. Watcher가 transcript와 exact Herdr session으로 terminal category를 재확인
+3. Refusal/429/budget → receipt 기록 후 slot terminal, replacement 없음
+4. Provider-terminal evidence 없는 실제 Pi exit → `interrupted` receipt 뒤 fresh generation
+5. Refused work를 재시도·paraphrase·resume하거나 다른 model로 우회하지 않음
 ```

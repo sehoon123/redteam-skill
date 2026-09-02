@@ -62,13 +62,12 @@ provider-refusal retry system; it was evidence that **fresh capacity plus durabl
 kept work moving, while dead capacity did not replace itself.
 
 OpenAI report p. 23 separately describes the intended collaboration distribution: a model may
-launch a small number of subagent processes, distribute/delegate tasks, and exchange information
-through the official collaboration tool.
+launch a small number of peer processes and exchange information through an official collaboration tool.
 
-**Implementation:** a bounded rolling supervisor preserves logical slot count. A terminal child is
-recorded before a fresh same-profile context starts. Refusal work becomes terminal `failed`, so
-replacement restores capacity but cannot retry or reroute the refused request. Budget exhaustion,
-provider rate limits, and recorder failure open a circuit breaker instead of causing a spawn storm.
+**Implementation:** Herdr keeps visible Pi processes in bounded slots and pi-intercom carries bounded
+lifecycle/reference messages. SQLite, not chat, remains task authority. Explicit refusal, budget, and
+provider-rate terminal outcomes close the slot without retry; only a confirmed process exit without such
+evidence is fenced as `interrupted` before a fresh same-profile generation starts.
 
 ### 5. Coordinator was emergent, not a fixed role or phase gate
 
@@ -76,7 +75,8 @@ METR: `PHASEONE[big]` said "We should build [a way to delegate], not own everyth
 sent hundreds of assignments, and accounted for about 10% of assignments while active.
 Assigned agents often subdelegated; 9/30 sampled trajectories had downstream assignments.
 
-**Implementation:** every peer may create work and sub-work. There is no coordinator profile.
+**Implementation:** every assessment peer may create work and sub-work. The Herdr supervisor owns only
+process lifecycle and cannot assign technical work or promote findings; there is no privileged peer profile.
 
 ### 6. Parallel workstreams, not a linear kill chain
 

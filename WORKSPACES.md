@@ -58,7 +58,7 @@ PENTEST_ENGAGEMENT=SITE-A pi
 PENTEST_ENGAGEMENT=SITE-B pi
 ```
 
-`PENTEST_ENGAGEMENT` overrides the shared pointer and is inherited by that process's subagents.
+`PENTEST_ENGAGEMENT` overrides the shared pointer and the Herdr launcher exports it into each peer pane before Pi starts.
 `PENTEST_HOME` remains the highest-priority explicit override for tests or custom deployments.
 
 ## Evidence paths

@@ -113,8 +113,9 @@ transitions supplied the durable coordination.
 Terminal outcomes exposed a separate reliability problem: Luna had three provider refusals;
 Claude had two provider refusals, two budget 429 failures, and one interrupted unbounded bash
 call. Because provider termination can occur before an agent emits `task.blocked` or `leave`,
-the runtime now includes parent-side `postflight.py`, idempotent `run-result` records, immediate
-lease recovery, bounded dossier/inbox output, finite tool timeouts, and run-result metrics.
+that release added parent-side `postflight.py`, idempotent `run-result` records, lease recovery,
+bounded dossier/inbox output, finite tool timeouts, and run-result metrics. The current canonical Herdr
+watcher calls `run-result` directly and retains `postflight.py` only for importing historical workflow receipts.
 Refusals are recorded but never retried or rerouted to another model.
 
 ## Historical strict proxy validation — 2026-09-01
@@ -151,12 +152,12 @@ Operational lessons and fixes:
    capacity only helps when replacements receive compressed state and enough execution time. Startup
    now uses `dossier --compact --recent 8 --gap-limit 5`; on the live GJ02 ledger this reduced startup
    JSON from 7,381 to 4,222 bytes (43%). Proxy smoke checks stay separate from deep autonomous leases.
-6. Sonnet hit repeated provider 429 responses after preflight. Rolling replacement now treats
-   `Too Many Requests`/429 as an immediate circuit breaker; two consecutive terminal failures in one
-   slot also stop replenishment even when the final provider message hides the earlier 429.
-7. The harness auto-injected a long acceptance-report contract into mutation-capable peers even though
-   the SQLite ledger already supplies evidence acceptance. Canonical peer launches now use
-   `acceptance:false`; selector structured output and recorder host verification remain enforced.
+6. Sonnet hit repeated provider 429 responses after preflight. The historical workflow treated
+   `Too Many Requests`/429 as a circuit breaker. The current Herdr watcher reads the exact Pi transcript,
+   records the circuit receipt, and never replenishes that provider-terminal slot.
+7. The old subagent harness injected a long acceptance-report contract into mutation-capable peers even
+   though the SQLite ledger already supplied evidence acceptance. Herdr peers now load only one peer profile
+   plus the bounded launch prompt; selector/recorder model children were removed.
 
 ## Multi-site isolation validation — 2026-09-01
 
@@ -246,7 +247,7 @@ generation recovery but not collective effectiveness.
 This isolated the root defect: target HTTP happened before separate model-owned artifact/attempt/event
 bookkeeping. v3.7 moves only that boundary into host code and keeps semantic reasoning distributed.
 
-The deterministic suite now contains 69 tests, including ten loopback-only HTTP tests:
+The deterministic suite now contains 71 tests, including ten loopback-only HTTP tests:
 
 - one `peer-start` returns network mode, grounded claim, and task-local brief;
 - `exec-http` sees a live/non-stalled claim before send, injects four provenance headers, disables redirects,
@@ -323,3 +324,26 @@ and ground truth contained no rejected keys, so false-positive precision was not
 SHA-256 is `013beed172e900f8f43dc599c058935e63a9d23df73a5efd04d563179249d636`, but manifests referenced its mutable
 path during execution. With only three repetitions, no significance claim is made. Canonical artifacts live
 under `.pi/pentest/benchmarks/swarmbench-loopback-v1/`.
+
+## Herdr lifecycle smoke — 2026-09-02
+
+A real Herdr-managed Sonnet 5 peer started in a dedicated pane with a fresh Pi session, exact ledger label
+`peer-1.gen-1`, restricted `read,bash,intercom` tools, and the Sonnet peer profile as appended system context.
+The process called `peer-start` against an authorized loopback fixture. The host then killed only that Pi PID
+while leaving its shell pane and event watcher alive.
+
+The watcher received/reconciled the lifecycle change, classified the transcript as non-provider
+`interrupted`, persisted and verified run ID `cohort-1:peer-1.gen-1`, released generation 1, and started a new
+Pi process/session/name as ledger label `peer-1.gen-2` in the same shell pane. Generation 2 claimed the released
+work and durably committed one bounded HTTP attempt. Strict replay over 33 events and 14 work items had zero
+errors; foreign-key check was empty. The smoke ended by disabling the slot before stopping its watcher, so no
+replacement was created during cleanup.
+
+Separately, an Opus 4.8 Pi session was started through Herdr, appeared under its stable pi-intercom name, received
+a read-only architecture task through intercom, and returned its report through intercom. Both independent
+Herdr reviewers approved the bounded design: SQLite remains work authority, intercom is advisory, explicit
+refusal/429/budget never triggers replacement, and only exact-session process death can replenish a slot.
+Missing/unreadable/ambiguous terminal transcripts are classified `provider-error`, quarantine current work as
+`failed`, and receive no replacement; only a clean `stop`/`toolUse` boundary without terminal markers is
+eligible for `interrupted` replacement. A simulated missing Herdr socket exited nonzero while the smoke
+ledger's run-result count remained unchanged, confirming server loss does not masquerade as peer death.

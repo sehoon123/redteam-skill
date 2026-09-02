@@ -10,6 +10,7 @@ import threading
 import tempfile
 import time
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -20,6 +21,7 @@ KB = ROOT / "pentest" / "kb.py"
 WORKSPACE = ROOT / "pentest" / "workspace.py"
 BENCHMARK = ROOT / "pentest" / "benchmark.py"
 sys.path.insert(0, str(ROOT / "pentest"))
+from herdr_cohort import classify_session, pane_exists, peer_prompt, run_json, session_name
 from replay import validate as validate_replay
 from scheduler import candidate_set_hash, rank_candidates
 
@@ -1176,47 +1178,82 @@ class CliTest(unittest.TestCase):
         self.assertEqual("failed", states["refused-work"])
         self.assertEqual("ready", states["other-work"])
 
-    def test_canonical_workflow_uses_provider_aware_elastic_ramp(self):
-        script = (ROOT / "workflows" / "cohort.js").read_text()
-        self.assertIn('runs.run("cohort-mode"', script)
-        self.assertIn('agent: "pentest-cohort-selector"', script)
-        selector = (ROOT / "agents" / "pentest-cohort-selector.md").read_text()
-        recorder = (ROOT / "agents" / "pentest-run-recorder.md").read_text()
-        self.assertIn("thinking: xhigh", selector)
-        self.assertIn("thinking: xhigh", recorder)
-        self.assertIn('cohortNumber === 1 ? "pentest-peer-sonnet" : "pentest-peer"', script)
-        self.assertIn("providerKey", script)
-        self.assertIn("function rampGate", script)
-        self.assertIn("ramp-status", script)
-        self.assertIn("var firstPromise = runs.run", script)
-        self.assertIn("var secondPromise = runs.run", script)
-        self.assertIn("await Promise.race", script)
-        self.assertIn("thirdResult = await runs.run", script)
-        self.assertNotIn("runs.lanes", script)
-        self.assertNotIn('resume: "previous"', script)
-        self.assertEqual(3, script.count("acceptance: false"))
-        self.assertIn("timeoutMs: 600000", script)
-        self.assertIn("8개 claim 완료 또는 7분", script)
-        self.assertIn("causal ancestry/evidence로 명시적으로 소비", script)
-        self.assertIn('var providerKey = "claude"', script)
-        self.assertIn("status --provider", script)
-        self.assertIn("function recordTerminal", script)
-        self.assertIn('agent: "pentest-run-recorder"', script)
-        self.assertIn("gate: verifyCommand", script)
-        self.assertIn("run-result-get", script)
-        self.assertIn("function opensCircuit", script)
-        self.assertIn("too many requests", script)
-        self.assertIn('category === "budget"', script)
-        self.assertNotIn('agent: "pentest-peer-luna"', script)
-        self.assertNotIn("generation + 1", script)
-        self.assertIn("peer-start", script)
-        self.assertIn("exec-http", script)
-        self.assertIn("checkpoint", script)
+    def test_canonical_herdr_supervisor_is_fresh_fenced_and_event_driven(self):
+        script = (ROOT / "pentest" / "herdr_cohort.py").read_text()
+        name = session_name("TEST-001", 2, 3, 4)
+        self.assertRegex(name, r"^[a-z][a-z0-9_-]{0,31}$")
+        self.assertEqual(name, session_name("TEST-001", 2, 3, 4))
+        prompt = peer_prompt("peer-3.gen-4", "redteam-coordinator", False)
+        for value in ("peer-start", "exec-http", "checkpoint", "pi-intercom", "TERMINAL"):
+            self.assertIn(value, prompt)
+        self.assertIn("재시도, paraphrase, resume, reroute, fallback하지 말고", prompt)
+        for value in ("events.subscribe", "pane.agent_detected", "pane.exited",
+                      "run-result-get", "generation", "HERDR_SOCKET_PATH"):
+            self.assertIn(value, script)
+        self.assertIn('"--no-context-files"', script)
+        self.assertIn('"--models", config["model"]', script)
+        self.assertNotIn('"--continue"', script)
+        self.assertNotIn('"--resume"', script)
+
+    def test_herdr_terminal_classification_is_fail_closed(self):
+        failed = run_json([
+            sys.executable, "-c",
+            "import sys;sys.stderr.write('{\"error\":{\"code\":\"server_not_running\"}}');sys.exit(1)",
+        ], check=False)
+        self.assertEqual("server_not_running", failed["error_code"])
+        with mock.patch("herdr_cohort.herdr", return_value={
+            "returncode": 1, "error_code": "pane_not_found", "error": "missing",
+        }):
+            self.assertFalse(pane_exists("w1:p999"))
+        with mock.patch("herdr_cohort.herdr", return_value={
+            "returncode": 1, "error_code": "server_not_running", "error": "offline",
+        }):
+            with self.assertRaises(RuntimeError):
+                pane_exists("w1:p1")
+        self.assertEqual("provider-error", classify_session(None)[0])
+        transcript = self.home / "board" / "peer.jsonl"
+        transcript.write_text(json.dumps({
+            "type": "message", "message": {"role": "assistant",
+            "content": [{"type": "text", "text": "blocked under Anthropic usage policy"}],
+            "stopReason": "stop"},
+        }) + "\n")
+        self.assertEqual("refusal", classify_session(str(transcript))[0])
+        transcript.write_text(json.dumps({
+            "type": "message", "message": {"role": "assistant",
+            "content": [{"type": "text", "text": "ordinary incomplete work"}],
+            "stopReason": "stop"},
+        }) + "\n")
+        self.assertEqual("interrupted", classify_session(str(transcript))[0])
+
+    def test_unclassified_herdr_terminal_quarantines_work(self):
+        agent = self.join("herdr-quarantine")
+        created = self.run_swarm(
+            "task-add", "--agent", agent, "--key", "herdr-unknown",
+            "--kind", "experiment", "--title", "Unknown terminal work",
+        )
+        self.run_swarm("next", "--agent", agent, "--wait", 0, "--quiet", 999)
+        recorded = self.run_swarm(
+            "run-result", "--label", "herdr-quarantine", "--run-id", "herdr-unknown-run",
+            "--provider", "claude", "--status", "failed", "--category", "provider-error",
+            "--detail", "unclassified terminal: transcript unavailable", "--quarantine",
+        )
+        self.assertEqual(1, recorded["released"])
+        conn = sqlite3.connect(self.db())
+        state = conn.execute("SELECT state FROM work WHERE id=?", (created["id"],)).fetchone()[0]
+        conn.close()
+        self.assertEqual("failed", state)
+        replay = self.run_swarm(
+            "replay-export", "--strict", "--output", self.home / "board" / "quarantine.json",
+        )
+        self.assertEqual([], replay["validation_errors"])
 
     def test_skill_has_only_canonical_launch_entrypoints(self):
         skill = (ROOT / "SKILL.md").read_text()
         research = (ROOT / "PROMPTING-RESEARCH.md").read_text()
-        self.assertIn("workflows/cohort.js", skill)
+        self.assertIn("pentest/herdr_cohort.py", skill)
+        self.assertIn("HERDR_ENV", skill)
+        self.assertIn("pi-intercom", skill)
+        self.assertNotIn("workflows/cohort.js", skill)
         self.assertIn("PROXY.md", skill)
         self.assertIn("WORKSPACES.md", skill)
         self.assertIn("CAUSAL-PROTOCOL.md", skill)
@@ -1238,8 +1275,9 @@ class CliTest(unittest.TestCase):
         self.assertIn("Direct ad-hoc target traffic", proxy_doc)
         self.assertIn("PENTEST_NETWORK_MODE", proxy_env)
         self.assertIn("unset HTTP_PROXY", proxy_env)
-        self.assertIn("globalConcurrencyLimit: 3", skill)
-        self.assertIn("maxSubagentSpawnsPerRun: 9", skill)
+        self.assertIn("assessment peer 최대 3", skill)
+        self.assertNotIn("globalConcurrencyLimit", skill)
+        self.assertNotIn("maxSubagentSpawnsPerRun", skill)
         self.assertNotIn("workflows/cohort-sonnet.js", skill)
         self.assertNotIn("workflows/cohort-opus.js", skill)
         self.assertNotIn("workflowScript: `", skill)

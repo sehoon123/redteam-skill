@@ -45,7 +45,7 @@ old owner의 artifact, attempt, typed event, finding mutation은 거부된다.
 시간은 분리한다.
 
 ```text
-operation_timeout < no_progress_timeout < claim_lease < child_timeout
+operation_timeout < no_progress_timeout < claim_lease < peer_process_timeout
 ```
 
 `inbox`, `brief`, `next(active-lease)`, heartbeat 같은 bookkeeping은 claim을 갱신하지 않는다.
@@ -141,14 +141,15 @@ Self-attestation과 arbitrary `validated:true` payload는 거부한다. Contradi
 
 ## Elastic cohort
 
-Canonical workflow는 첫 assessment peer 하나로 시작한다. 첫 durable target action과 provider health,
+Herdr supervisor는 첫 assessment peer 하나로 시작한다. 첫 durable target action과 provider health,
 ready backlog를 확인한 뒤 두 번째를 시작한다. Verify work 또는 distinct grounded workstream이 있을 때만
 세 번째를 시작한다. 동시 assessment peer 상한과 기본 cohort target은 3이다.
 
-Cohort 1은 Sonnet, cohort 2+는 Opus지만 work 유형으로 model을 route하지 않는다. Provider 429는
-15분 global circuit을 열고 새 same-provider launch를 막는다. Refusal/429/budget/policy failure는 retry,
-resume, paraphrase, reroute, fallback하지 않는다. Runtime이 hard child kill을 제공하지 않는 경우
-replacement는 terminal receipt 전에 시작하지 못한다고 정직하게 문서화한다.
+Cohort 1은 Sonnet, cohort 2+는 Opus지만 work 유형으로 model을 route하지 않는다. 각 generation은
+새 Pi process/session/name이며 resume하지 않는다. Provider 429는 15분 global circuit을 열고 새
+same-provider launch를 막는다. Refusal/429/budget/policy failure는 retry, paraphrase, reroute,
+fallback하지 않는다. Intercom은 durable reference와 lifecycle notification만 전달하고 task/evidence
+state는 SQLite에 둔다.
 
 ## Replay and telemetry
 
@@ -176,9 +177,13 @@ Alternative scheduler policies는 historical candidate ranking만 비교하며 c
 
 ## Completion and recovery
 
-Normal peer는 `leave --summary`; provider terminal outcome은 recorder와 `postflight.py`가 idempotently
-기록한다. `cohort-end`는 active claims를 release하고 partial provenance, handoff, run results, delta를
-고정한다. 다음 `cohort-start --peers 3`이 같은 backlog를 이어받는다.
+Normal peer는 `leave --summary` 뒤 Pi process를 종료하지 않고 idle로 남는다. 실제 process death는
+Herdr watcher가 exact pane/session/generation으로 확인한다. Transcript가 refusal/429/budget이거나
+missing/unreadable/ambiguous이면 work를 terminal/quarantine하고 replacement하지 않는다. Clean stop/tool
+boundary가 남은 확인된 exit만 host가 `run-result interrupted`와 `run-result-get`
+receipt를 먼저 고정한 뒤 fresh generation으로 보충한다. Pane exit와 Herdr/socket loss는 fail closed다.
+`cohort-end`는 active claims를 release하고 partial provenance, handoff, run results, delta를 고정한다.
+다음 `cohort-start --peers 3`이 같은 backlog를 이어받는다.
 
 Peer는 engagement를 close하지 않는다. `close --require-saturation`은 target peer 수를 채운 dry cohort
 streak, proposed findings, priority 80+ backlog를 검사한다. Emergency operator close는 항상 우선한다.

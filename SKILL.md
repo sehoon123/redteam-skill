@@ -9,15 +9,16 @@ description: |
 # Redteam
 
 인가된 target을 고정 role이나 phase 없이 평가한다. SQLite가 claim, evidence, attempt,
-finding, causal event, provider circuit, replay의 유일한 authority다. v3.7의 우선순위는 agent 수가
-아니라 **한 번 수행된 HTTP assertion을 model 종료 전에 durable result로 만드는 것**이다.
+finding, causal event, provider circuit, replay의 유일한 authority다. Herdr는 Pi process lifecycle,
+pi-intercom은 bounded advisory message만 담당한다. 우선순위는 agent 수가 아니라 **한 번 수행된 HTTP
+assertion을 model 종료 전에 durable result로 만드는 것**이다.
 
 - target HTTP: agent-owned curl이 아니라 host-owned `exec-http`
 - semantic interpretation + follow-up + completion: 한 transaction의 `checkpoint`
 - empty engagement: deterministic reachability/root-fetch work
 - interruption: `work.partial` + next-generation resume-first brief
 - stale owner: request 직전 claim fencing
-- launch: provider capacity에 맞춘 1→2→최대 3 elastic ramp
+- launch: Herdr-managed fresh Pi generation으로 1→2→최대 3 elastic ramp
 - Evidence Graph/adaptive scheduler: benchmark가 필요성을 입증할 때까지 보류
 
 연구 근거는 `RESEARCH.md`와 `PROMPTING-RESEARCH.md`, 협업/causal 계약은 `SWARM.md`와
@@ -35,16 +36,16 @@ Scope hash는 engagement 생성 시 고정된다. App-level 검사만으로 egre
 
 ## 설치
 
+Herdr 0.8+와 pi-intercom이 필요하다. Herdr 밖에서는 terminal fallback을 만들지 않고 중단한다.
+
 ```bash
-mkdir -p .pi/skills/redteam/workflows .pi/agents .pi/pentest
+mkdir -p .pi/skills/redteam .pi/agents .pi/pentest
 cp SKILL.md SWARM.md RESEARCH.md PROMPTING-RESEARCH.md PROXY.md WORKSPACES.md \
   CAUSAL-PROTOCOL.md SWARMBENCH.md VALIDATION.md .pi/skills/redteam/
-cp workflows/cohort.js .pi/skills/redteam/workflows/
 cp -R benchmarks .pi/skills/redteam/
 cp agents/pentest-peer.md agents/pentest-peer-sonnet.md agents/pentest-peer-luna.md \
-  agents/pentest-cohort-selector.md agents/pentest-run-recorder.md agents/luna-probe.md .pi/agents/
+  agents/luna-probe.md .pi/agents/
 cp -R pentest/. .pi/pentest/
-# settings.json의 peer model override를 .pi/settings.json에 병합
 ```
 
 Runtime은 공유되지만 scope, SQLite, scratch, findings, board, memory, cache는 engagement-local이다.
@@ -92,41 +93,51 @@ host/port를 scope와 비교하고 redirect를 follow하지 않으며, request �
 모든 request에 host-owned `X-Redteam-Agent`, `X-Redteam-Claim`, `X-Redteam-Experiment`,
 `X-Redteam-Engagement`를 넣는다. Agent가 같은 header를 덮어쓸 수 없다. 자세한 의미는 `PROXY.md`.
 
-## Canonical elastic launch
+## Canonical Herdr elastic launch
 
-Canonical source는 `workflows/cohort.js` 하나뿐이다.
-
-```js
-subagent({
-  workflowScriptPath: ".pi/skills/redteam/workflows/cohort.js",
-  cwd: ".",
-  async: true,
-  timeoutMs: 3600000,
-  globalConcurrencyLimit: 3,
-  maxSubagentSpawnsPerRun: 9
-})
-```
-
-Workflow contract:
-
-1. Cohort 1은 Sonnet, cohort 2+는 Opus profile을 선택한다. Work 종류로 model을 route하지 않는다.
-2. 첫 peer 하나만 launch하고 durable useful action과 provider circuit health를 관찰한다.
-3. Durable experiment와 ready backlog가 있을 때 두 번째 peer를 launch한다.
-4. Verify work 또는 서로 다른 grounded workstream이 있을 때만 세 번째 peer를 launch한다.
-5. Target peer 기본값과 최대 동시 assessment peer는 3이다. 각 peer는 8개 claim 또는 7분에서 새 claim을 멈추고 leave하여 10분 child timeout 전에 durable handoff를 남긴다.
-6. Provider 429는 model ID와 분리된 logical provider key(`claude`)로 15분 global backoff를 열고 새 same-provider launch/replacement를 막는다.
-7. Failed child를 같은 workflow에서 retry/resume/reroute하지 않는다. Fallback model은 없다.
-8. Runtime API가 강제 child kill을 보장하지 않으므로 replacement는 terminal receipt 뒤에만 가능하다;
-   stale target traffic 자체는 `exec-http` fencing이 차단한다.
-9. Actor label은 workflow key와 동일해야 `run-result` provenance가 연결된다.
-
-Workflow 종료 후 parent backstop:
+Canonical launcher는 `pentest/herdr_cohort.py`다. 먼저 Herdr와 intercom 연결을 확인하고 coordinator의
+stable intercom name을 사용한다.
 
 ```bash
-python3 .pi/pentest/postflight.py <workflow-run-dir>/status.json \
-  --end-cohort --reason 'elastic cohort complete'
-python3 .pi/pentest/swarm.py cohort-start --label cohort-2 --peers 3
+test "${HERDR_ENV:-}" = 1
+herdr --version
+# Pi tool에서: intercom({ action: "status" })
 ```
+
+Coordinator는 명시적 pane ID로 최대 세 peer shell과 별도 watcher shell을 만든다. 생성 응답의
+`pane_id`를 그대로 사용하며 사용자 focus를 바꾸지 않는다. Slot 1을 시작한 뒤 watcher를 ordinary
+command로 실행한다.
+
+```bash
+python3 .pi/pentest/herdr_cohort.py launch \
+  --pane '<peer-pane-1>' --slot 1 --coordinator '<coordinator-intercom-name>'
+herdr pane run '<watcher-pane>' \
+  'python3 .pi/pentest/herdr_cohort.py watch --interval 2'
+```
+
+`ramp-status --stage 2|3`이 ready일 때만 같은 `launch` command로 slot 2와 3을 추가한다. Launcher도
+이 gate와 provider circuit을 다시 확인한다. Contract:
+
+1. Cohort 1은 Sonnet 5, cohort 2+는 Opus 4.8이며 fallback model은 없다. Luna는 explicit
+   `--kind luna`에서만 one-lease fresh process로 사용한다.
+2. 각 generation은 `--continue`/`--resume` 없는 새 Pi process와 새 Herdr/intercom name이다.
+3. Peer system context는 해당 `pentest-peer*.md` 하나뿐이고, launch prompt는 authorization,
+   task-local evidence, 정상 동작부터의 점진적 검증, host-owned `exec-http`를 명시한다.
+4. Intercom은 READY/PROGRESS/FINDING/TERMINAL/DONE과 durable reference만 전달한다. Raw payload,
+   credential, response body와 task assignment는 전달하지 않으며 SQLite가 계속 유일한 authority다.
+5. 실제 Pi process 소실만 replacement 후보이다. `idle`, `done`, `blocked`, `unknown`은 death가 아니다.
+6. Watcher는 exact pane/session/generation을 재확인하고 transcript의 마지막 assistant content,
+   `stopReason`, `errorMessage`를 분류한다. Refusal/429/budget은 terminal이며 replacement하지 않는다.
+   Missing/unreadable/ambiguous transcript도 current work를 quarantine하고 replacement하지 않는다.
+7. Clean stop/tool boundary가 남은 비-provider process death만 먼저 `run-result interrupted`를 기록하고 `run-result-get`으로
+   receipt를 검증한다. Backlog와 circuit을 다시 확인한 뒤에만 generation+1을 같은 shell pane에 시작한다.
+8. Pane 자체의 exit, Herdr socket/server loss, stale event, shell-not-ready는 fail closed다. Reconnect 후
+   snapshot reconcile 전에는 launch하지 않는다.
+9. 최대 동시 assessment peer는 3이다. Claude peer는 8개 claim 또는 7분, Luna는 한 lease 후 leave하고
+   Pi process를 직접 종료하지 않은 채 idle로 남는다.
+
+Cohort 종료 시 먼저 roster slot을 `disable`하고 watcher를 중단한 뒤 `cohort-end`를 실행한다. Skill은
+사용자가 만든 pane이나 Herdr session을 자동으로 닫지 않는다.
 
 ## Reliable atomic assertion
 
@@ -187,7 +198,7 @@ work/claim completion을 처리한다. New generation은 같은 work의 이전 d
 시간 관계:
 
 ```text
-operation timeout < no-progress timeout < claim lease < child timeout
+operation timeout < no-progress timeout < claim lease < peer process timeout
 ```
 
 Bookkeeping/inbox/brief/heartbeat는 lease를 갱신하지 않는다. Durable artifact/attempt, host execution,
